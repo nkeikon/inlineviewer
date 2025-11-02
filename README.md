@@ -12,9 +12,13 @@ viewinline R.tif G.tif B.tif   # RGB composite
 ```
 It’s designed for iTerm2 on macOS, using its inline image protocol to render a preview.
 
-### Available options
+### Dependencies
+Requires Python 3.9 or later and the following libraries:
 ```bash
-### Common options
+pip install numpy pillow rasterio geopandas matplotlib pyogrio
+```
+
+### Available options
 ```bash
 --display DISPLAY       # resize the displayed image (0.5=smaller, 2=bigger). default: auto fit to terminal
 --ansi-size ANSI_SIZE   # set resolution if you are viewing the ANSI preview (try 180x90 or 200x100)
@@ -26,11 +30,6 @@ It’s designed for iTerm2 on macOS, using its inline image protocol to render a
 --edgecolor EDGECOLOR   # edge color for vector outlines (hex or named color). default: #F6FF00
 --layer LAYER           # layer name for GeoPackage or multi layer files
 ```
-### Dependencies
-Requires Python 3.9 or later and the following libraries:
-```bash
-pip install numpy pillow rasterio geopandas matplotlib pyogrio
-```
 
 ### ANSI/ASCII color preview
 If iTerm2 isn’t available, viewinline will automatically switch an
@@ -38,4 +37,3 @@ ANSI/ASCII color preview or save a quick PNG under /tmp/viewinline_preview.png.
 
 This mode works on terminals with **ANSI color support** and may not display correctly on others.  
 For compatible terminals, `viewinline` renders images in a very coarse resolution. This feature is experimental.
-# inlineviewer
