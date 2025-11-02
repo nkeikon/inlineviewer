@@ -13,9 +13,8 @@ viewinline R.tif G.tif B.tif   # RGB composite
 It’s designed for iTerm2 on macOS, using its inline image protocol to render a preview.
 ## Features  
 - Displays rasters and vectors directly in the terminal  
-- Works with iTerm2 inline image protocol  
-- Falls back to ANSI or ASCII color preview when inline display is not supported  
-- Non interactive — everything is controlled through command line options  
+- Works with iTerm2 inline image protocol 
+- Non interactive: everything is controlled through command line options  
 
 ---
 
