@@ -17,11 +17,13 @@ from io import BytesIO
 import numpy as np
 from PIL import Image, ImageOps
 from matplotlib import colormaps
+import matplotlib as mpl
+
 import warnings
 
 warnings.filterwarnings("ignore", message="More than one layer found", category=UserWarning)
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 
 AVAILABLE_COLORMAPS = [
     "viridis", "inferno", "magma", "plasma",
@@ -278,11 +280,25 @@ def render_vector(path, args):
         if column and np.issubdtype(gdf[column].dtype, np.number):
             vmin, vmax = np.percentile(gdf[column].dropna(), (2, 98))
             print(f"[INFO] Coloring by '{column}' (range: {vmin:.2f}–{vmax:.2f})")
-            gdf.plot(ax=ax, column=column, cmap=cmap, vmin=vmin, vmax=vmax,
-                     linewidth=0.3, edgecolor="black", zorder=1)
+            norm = mpl.colors.Normalize(vmin=vmin, vmax=vmax)
+            cmap = colormaps.get(args.colormap or "terrain")
+
+            # Detect geometry type
+            geom_type = gdf.geom_type.iloc[0]
+
+            if geom_type.startswith("Line"):
+                # Manually plot each feature with color
+                for _, row in gdf.iterrows():
+                    val = row[column]
+                    color = cmap(norm(val))
+                    ax.plot(*row.geometry.xy, color=color, linewidth=0.5)
+            else:
+                gdf.plot(ax=ax, column=column, cmap=cmap, vmin=vmin, vmax=vmax,
+                        linewidth=0.3, edgecolor="none", zorder=1)
         else:
             gdf.plot(ax=ax, facecolor="none", edgecolor=args.edgecolor,
-                     linewidth=0.7, zorder=1)
+                    linewidth=0.7, zorder=1)
+
     except Exception as e:
         print(f"[WARN] Plotting failed ({e}) — fallback to border-only.")
         gdf.plot(ax=ax, facecolor="none", edgecolor="gray", linewidth=0.5)
