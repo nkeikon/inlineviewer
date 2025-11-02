@@ -37,3 +37,7 @@ ANSI/ASCII color preview or save a quick PNG under /tmp/viewinline_preview.png.
 
 This mode works on terminals with **ANSI color support** and may not display correctly on others.  
 For compatible terminals, `viewinline` renders images in a very coarse resolution. This feature is experimental.
+
+## License
+This project is released under the MIT License © 2025 Keiko Nomura 
+If you find this tool useful, please consider supporting or acknowledging the author. 
