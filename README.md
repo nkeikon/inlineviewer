@@ -52,10 +52,11 @@ pip install inlineviewer
 ```
 
 ### ANSI/ASCII color preview
-If iTerm2 isn’t available, viewinline will automatically switch an
+If iTerm2 isn’t available, viewinline will automatically switch to an
 ANSI/ASCII color preview or save a quick PNG under /tmp/viewinline_preview.png.
 
 This mode works on terminals with **ANSI color support** and may not display correctly on others.  
+
 For compatible terminals, `viewinline` renders images in a very coarse resolution. This feature is experimental.
 
 ## License
