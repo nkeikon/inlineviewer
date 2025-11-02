@@ -36,7 +36,7 @@ It’s designed for iTerm2 on macOS, using its inline image protocol to render a
 Requires Python 3.9 or later.  
 
 ```bash
-pip install inlineviewer
+pip install viewinline
 ```
 ### Available options
 ```bash
