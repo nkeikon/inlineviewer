@@ -1,6 +1,6 @@
 # viewinline
 **Quick-look geospatial viewer for iTerm2.**  
-Displays rasters and vectors directly in the terminal — no GUI, no temporary files.
+Displays rasters and vectors directly in the terminal - no GUI, no temporary files.
 
 This tool combines the core display logic of `viewtif` and `viewgeom`, but is **non-interactive**:  
 you can’t zoom, pan, or switch colormaps on the fly. Instead, you control everything through command-line options (e.g. --display, --color-by, --colormap).
@@ -11,13 +11,34 @@ viewinline path/to/vector.geojson
 viewinline R.tif G.tif B.tif   # RGB composite
 ```
 It’s designed for iTerm2 on macOS, using its inline image protocol to render a preview.
+## Features  
+- Displays rasters and vectors directly in the terminal  
+- Works with iTerm2 inline image protocol  
+- Falls back to ANSI or ASCII color preview when inline display is not supported  
+- Non interactive — everything is controlled through command line options  
 
-### Dependencies
-Requires Python 3.9 or later and the following libraries:
+---
+
+## Supported formats  
+**Rasters**  
+- GeoTIFF (`.tif`, `.tiff`)  
+- Single band or multi band composites  
+
+**Vectors**  
+- GeoJSON (`.geojson`)  
+- Shapefile (`.shp`, `.dbf`, `.shx`)  
+- GeoPackage (`.gpkg`)  
+
+**Composite inputs**  
+- You can pass three rasters (e.g. `R.tif G.tif B.tif`) to create an RGB composite  
+
+---
+## Installation  
+Requires Python 3.9 or later.  
+
 ```bash
-pip install numpy pillow rasterio geopandas matplotlib pyogrio
+pip install inlineviewer
 ```
-
 ### Available options
 ```bash
 --display DISPLAY       # resize the displayed image (0.5=smaller, 2=bigger). default: auto fit to terminal
@@ -39,5 +60,6 @@ This mode works on terminals with **ANSI color support** and may not display cor
 For compatible terminals, `viewinline` renders images in a very coarse resolution. This feature is experimental.
 
 ## License
-This project is released under the MIT License © 2025 Keiko Nomura 
+This project is released under the MIT License © 2025 Keiko Nomura.
+
 If you find this tool useful, please consider supporting or acknowledging the author. 
