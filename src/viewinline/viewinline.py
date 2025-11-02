@@ -21,6 +21,8 @@ import warnings
 
 warnings.filterwarnings("ignore", message="More than one layer found", category=UserWarning)
 
+__version__ = "0.1.1"
+
 AVAILABLE_COLORMAPS = [
     "viridis", "inferno", "magma", "plasma",
     "cividis", "terrain", "RdYlGn", "coolwarm",
@@ -30,14 +32,23 @@ AVAILABLE_COLORMAPS = [
 # ---------------------------------------------------------------------
 # Display utilities
 # ---------------------------------------------------------------------
-def show_inline_image(image_array: np.ndarray) -> None:
-    """Display a numpy RGB image inline in iTerm2."""
+def show_inline_image(image_array: np.ndarray, display_scale: float | None = None) -> None:
+    """Display a numpy RGB image inline in iTerm2, default width=33%."""
     try:
         buffer = BytesIO()
         Image.fromarray(image_array).save(buffer, format="PNG")
         encoded = base64.b64encode(buffer.getvalue()).decode("utf-8")
-        # sys.stdout.write(f"\033]1337;File=inline=1:{encoded}\a\n")
-        sys.stdout.write(f"\033]1337;File=inline=1;width=33%:{encoded}\a\n") #1/3 of window size
+
+        # Default: 1/3 of window
+        if display_scale is None:
+            width_pct = 33
+        else:
+            # Interpret --display as multiplier of full width (1.0 = 100%)
+            width_pct = int(100 * display_scale)
+            # Clamp to reasonable range
+            width_pct = max(5, min(width_pct, 300))
+
+        sys.stdout.write(f"\033]1337;File=inline=1;width={width_pct}%:{encoded}\a\n")
         sys.stdout.flush()
     except Exception as e:
         print(f"[WARN] Inline display failed ({e})")
@@ -300,7 +311,7 @@ def show_image_auto(img: np.ndarray, args) -> None:
     """Automatically pick best display method."""
     if "ITERM_SESSION_ID" in os.environ:
         try:
-            show_inline_image(img)
+            show_inline_image(img, getattr(args, "display", None))
             print("[OK] Inline render complete.")
             return
         except Exception:
@@ -380,6 +391,8 @@ def main() -> None:
         help="Edge color for vector outlines (hex or named color).")
     parser.add_argument("--layer", type=str, default=None,
         help="Layer name for GeoPackage or multi-layer files.")
+
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
 
     args = parser.parse_args()
 
