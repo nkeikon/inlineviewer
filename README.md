@@ -1,4 +1,8 @@
 # viewinline
+[![Downloads](https://static.pepy.tech/badge/viewinline)](https://pepy.tech/project/viewinline)
+[![PyPI version](https://img.shields.io/pypi/v/viewinline)](https://pypi.org/project/viewinline/)
+[![Python version](https://img.shields.io/badge/python-%3E%3D3.9-blue.svg)](https://pypi.org/project/viewinline/)
+
 **Quick-look geospatial viewer for iTerm2.**  
 Displays rasters and vectors directly in the terminal - no GUI, no temporary files.
 
