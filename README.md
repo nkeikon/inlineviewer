@@ -2,53 +2,75 @@
 **Quick-look geospatial viewer for iTerm2.**  
 Displays rasters and vectors directly in the terminal - no GUI, no temporary files.
 
-This tool combines the core display logic of `viewtif` and `viewgeom`, but is **non-interactive**:  
-you can’t zoom, pan, or switch colormaps on the fly. Instead, you control everything through command-line options (e.g. --display, --color-by, --colormap).
+This tool combines the core display logic of `viewtif` and `viewgeom`, but is **non-interactive**: you can’t zoom, pan, or switch colormaps on the fly. Instead, you control everything through command-line options (e.g. --display, --color-by, --colormap).
 
-```bash
-viewinline path/to/file.tif
-viewinline path/to/vector.geojson
-viewinline R.tif G.tif B.tif   # RGB composite
-```
 It’s designed for iTerm2 on macOS, using its inline image protocol to render a preview.
-## Features  
-- Displays rasters and vectors directly in the terminal  
-- Works with iTerm2 inline image protocol 
-- Non interactive: everything is controlled through command line options  
 
----
-
-## Supported formats  
-**Rasters**  
-- GeoTIFF (`.tif`, `.tiff`)  
-- Single band or multi band composites  
-
-**Vectors**  
-- GeoJSON (`.geojson`)  
-- Shapefile (`.shp`, `.dbf`, `.shx`)  
-- GeoPackage (`.gpkg`)  
-
-**Composite inputs**  
-- You can pass three rasters (e.g. `R.tif G.tif B.tif`) to create an RGB composite  
-
----
 ## Installation  
 Requires Python 3.9 or later.  
 
 ```bash
 pip install viewinline
 ```
+## Usage
+```bash
+viewinline path/to/file.tif
+viewinline path/to/vector.geojson
+viewinline R.tif G.tif B.tif                 # RGB composite
+viewinline path/to/multiband.tif --rgb-bands 3,2,1
+viewinline path/to/folder --gallery 4x3      # show image gallery (4x3 grid)
+viewinline data.csv --describe               # show numeric summary
+viewinline data.csv --hist                   # render inline histograms
+viewinline data.csv --scatter X Y  # scatter plot
+```
+
+## Features  
+- Displays rasters and vectors directly in the terminal  
+- Works with iTerm2 inline image protocol 
+- Non interactive: everything is controlled through command line options  
+
+## Supported formats  
+**Rasters**  
+- GeoTIFF (.tif, .tiff)
+- PNG, JPEG (.png, .jpg, .jpeg)
+- Single-band or multi-band composites 
+
+**Composite inputs**  
+- You can pass three rasters (e.g. `R.tif G.tif B.tif`) to create an RGB composite  
+
+**Vectors**  
+- GeoJSON (`.geojson`)  
+- Shapefile (`.shp`, `.dbf`, `.shx`)  
+- GeoPackage (`.gpkg`)  
+
+**CSV**
+- Preview (--describe)
+- Histograms (--hist)
+- Scatter plots (--scatter x y [--marker dot|plus|x|square])
+
+**Gallery view**
+- Display all images in a folder with --gallery 4x4
+
 ### Available options
 ```bash
---display DISPLAY       # resize the displayed image (0.5=smaller, 2=bigger). default: auto fit to terminal
---ansi-size ANSI_SIZE   # set resolution if you are viewing the ANSI preview (try 180x90 or 200x100)
---band BAND             # band number to display (single raster case). default: 1
---colormap [{viridis,inferno,magma,plasma,cividis,terrain,RdYlGn,coolwarm,Spectral,cubehelix,tab10,turbo}]
-                        # apply a colormap to single band rasters or vector coloring
-                        # flag without value uses 'terrain' by default
---color-by COLOR_BY     # select a numeric column to color vector features
---edgecolor EDGECOLOR   # edge color for vector outlines (hex or named color). default: #F6FF00
---layer LAYER           # layer name for GeoPackage or multi layer files
+  --display DISPLAY     Resize only the displayed image (0.5=smaller, 2=bigger). Default: auto-fit to terminal.
+  --ansi-size ANSI_SIZE
+                        ANSI fallback resolution. Try 180x90 or 200x100.
+  --band BAND           Band number to display (single raster case). (default: 1)
+  --colormap [{viridis,inferno,magma,plasma,cividis,terrain,RdYlGn,coolwarm,Spectral,cubehelix,tab10,turbo}]
+                        Apply colormap to single-band rasters or vector coloring. Flag without value → 'terrain'.
+  --rgb-bands RGB_BANDS
+                        Comma-separated band numbers for RGB display (e.g., '3,2,1'). Overrides default 1-3.
+  --gallery [GRID]      Display all PNG/JPG/TIF images in a folder as thumbnails (e.g., 5x5 grid).
+  --describe            Show numeric summary for CSV files (similar to pandas.describe). (default: False)
+  --hist                Plot histograms for numeric columns in CSV. (default: False)
+  --bins BINS           Number of bins for CSV histograms (used with --hist). (default: 20)
+  --scatter X Y         Plot scatter of two numeric CSV columns (e.g. --scatter area_km2 year).
+  --color-by COLOR_BY   Numeric column to color vector features by (optional).
+  --width WIDTH         Line width for vector boundaries (default: 0.7)
+  --edgecolor EDGECOLOR
+                        Edge color for vector outlines (hex or named color). (default: #F6FF00)
+  --layer LAYER         Layer name for GeoPackage or multi-layer files.
 ```
 
 ### ANSI/ASCII color preview
