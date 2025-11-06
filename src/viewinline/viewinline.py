@@ -23,7 +23,7 @@ import warnings
 
 warnings.filterwarnings("ignore", message="More than one layer found", category=UserWarning)
 
-__version__ = "0.1.3"
+__version__ = "0.1.4"
 
 AVAILABLE_COLORMAPS = [
     "viridis", "inferno", "magma", "plasma",
@@ -105,15 +105,15 @@ def resize_to_terminal(img: np.ndarray) -> tuple[np.ndarray, float]:
 # CSV handling
 # ---------------------------------------------------------------------
 def preview_csv(path: str, max_rows: int = 10) -> None:
-    """Preview a CSV file (first few rows) with a compact table display."""
-    import csv
-    import os
+    """Preview a CSV file"""
+    import csv, os
     from itertools import islice
 
     try:
         with open(path, newline='', encoding='utf-8') as f:
             reader = csv.reader(f)
             header = next(reader, [])
+            # Peek ahead to get sample rows and total count
             rows = list(islice(reader, max_rows))
             total_rows = sum(1 for _ in reader) + len(rows) + 1  # approximate count
 
@@ -122,7 +122,17 @@ def preview_csv(path: str, max_rows: int = 10) -> None:
             return
 
         n_cols = len(header)
-        print(f"[DATA] CSV file: {os.path.basename(path)} — {total_rows} rows × {n_cols} columns")
+        print(f"[DATA] CSV file: {os.path.basename(path)} — {total_rows:,} rows × {n_cols} columns")
+
+        # Show compact summary of columns
+        # preview_names = ", ".join(header[:8]) + (" ..." if n_cols > 8 else "")
+        preview_names = ", ".join(header)
+        print(f"[INFO] Columns: {preview_names}")
+
+        # Ask user if they want to show the first rows
+        ans = input("Preview first 10 rows? [y/N]: ").strip().lower()
+        if ans not in ("y", "yes"):
+            return
 
         # Compute column widths based on sample
         sample = [header] + rows
@@ -147,7 +157,8 @@ def preview_csv(path: str, max_rows: int = 10) -> None:
     except Exception as e:
         print(f"[ERROR] Failed to preview CSV: {e}")
 
-def describe_csv(path: str) -> None:
+
+def describe_csv(path: str, column: str = None) -> None:
     """Compute simple descriptive stats for numeric columns (no pandas)."""
     import csv
     import math
@@ -177,7 +188,15 @@ def describe_csv(path: str) -> None:
             print("[INFO] No numeric columns found.")
             return
 
-        print(f"[SUMMARY] Numeric columns (describe):")
+        # --- If a specific column is requested ---
+        if column:
+            if column not in numeric_cols:
+                print(f"[WARN] Column '{column}' not found or not numeric.")
+                return
+            numeric_cols = {column: numeric_cols[column]}
+            print(f"[SUMMARY] Column '{column}' (describe):")
+        else:
+            print(f"[SUMMARY] Numeric columns (describe):")
 
         # Prepare table header
         headers = ["Column", "count", "mean", "std", "min", "25%", "50%", "75%", "max"]
@@ -216,11 +235,13 @@ def describe_csv(path: str) -> None:
     except Exception as e:
         print(f"[ERROR] Failed to describe CSV: {e}")
 
-def inline_histogram_csv(path: str, bins: int = 20, args=None) -> None:
-    """Render minimal inline histograms for numeric columns using Pillow (no matplotlib)."""
-    import csv, math
-    from PIL import Image, ImageDraw, ImageFont
+
+def inline_histogram_csv(path: str, column: str = None, bins: int = 20, args=None) -> None:
+    """Render inline histograms for numeric CSV columns (single or multiple)."""
+    import csv, math, io, base64, sys
     import numpy as np
+    from PIL import Image, ImageDraw, ImageFont
+    from matplotlib import colormaps
 
     try:
         # --- Read CSV ---
@@ -245,29 +266,40 @@ def inline_histogram_csv(path: str, bins: int = 20, args=None) -> None:
             print("[INFO] No numeric columns found.")
             return
 
-        cols = list(numeric_cols.items())
-        print(f"[INFO] Found {len(cols)} numeric columns. Rendering inline histograms...")
+        # --- Select column(s) ---
+        if column:
+            if column not in numeric_cols:
+                print(f"[WARN] Column '{column}' not found or not numeric.")
+                return
+            cols = [(column, numeric_cols[column])]
+        else:
+            cols = list(numeric_cols.items())
+            print(f"[INFO] Found {len(cols)} numeric columns. Rendering inline histograms...")
 
         # --- Settings ---
-        w, h = 300, 180 # per histogram
+        w, h = 300, 180  # per histogram
         margin = 40
-        bg_color = (220,220,220)  # medium gray like vector background
-        # bar_color = (70, 130, 180) # steelblue
+        bg_color = (220, 220, 220)
         text_color = (30, 30, 30)
+        font = None
+        try:
+            font = ImageFont.load_default()
+        except Exception:
+            pass
 
-        # --- Layout (2xN grid if many columns) ---
-        per_row = 2
+        # --- Layout ---
+        if len(cols) == 1:
+            per_row = 1
+            w, h = 400, 200   # make single plot a bit larger
+        else:
+            per_row = 2
+            w, h = 300, 180
+
         nrows = math.ceil(len(cols) / per_row)
         total_w = per_row * w + (per_row + 1) * margin
         total_h = nrows * h + (nrows + 1) * margin
         canvas = Image.new("RGB", (total_w, total_h), bg_color)
         draw = ImageDraw.Draw(canvas)
-
-        # --- Try loading a small system font ---
-        try:
-            font = ImageFont.load_default()
-        except Exception:
-            font = None
 
         # --- Draw each histogram ---
         for i, (col, vals) in enumerate(cols):
@@ -275,20 +307,13 @@ def inline_histogram_csv(path: str, bins: int = 20, args=None) -> None:
             col_i = i % per_row
             x0 = margin + col_i * (w + margin)
             y0 = margin + row_i * (h + margin)
-
-            # Compute histogram
-            counts, edges = np.histogram(vals, bins=bins)
+            counts, _ = np.histogram(vals, bins=bins)
             counts = counts.astype(float)
             counts /= counts.max() if counts.max() else 1
 
-            from matplotlib import colormaps
             cmap = colormaps["viridis"]
-
-            # Bar width
             bw = w / bins
-            base_y = y0 + h - 25  # axis baseline
-
-            # Normalize bar heights 0–1 for color scaling
+            base_y = y0 + h - 25
             max_count = max(counts) if counts.max() else 1
 
             for j, c in enumerate(counts):
@@ -296,28 +321,32 @@ def inline_histogram_csv(path: str, bins: int = 20, args=None) -> None:
                 x1 = int(x0 + j * bw)
                 x2 = int(x1 + bw - 1)
                 y1 = int(base_y - bar_h)
-
-                # Color based on relative frequency (higher count → brighter)
                 normalized_height = c / max_count
                 color = tuple(int(x * 255) for x in cmap(normalized_height)[:3])
-
                 draw.rectangle([x1, y1, x2, base_y], fill=color)
 
-            # Axis
+            # Axes & labels
             draw.line([x0, base_y, x0 + w, base_y], fill=(120, 120, 120), width=1)
             draw.line([x0, y0 + 25, x0, base_y], fill=(120, 120, 120), width=1)
-
-            # Labels
             draw.text((x0 + 4, y0 + 4), col[:16], fill=text_color, font=font)
             mn, mx = min(vals), max(vals)
             draw.text((x0 + 2, base_y + 5), f"{mn:.1f}", fill=(90, 90, 90), font=font)
             draw.text((x0 + w - 35, base_y + 5), f"{mx:.1f}", fill=(90, 90, 90), font=font)
 
-        # --- Inline display ---
-        show_image_auto(np.array(canvas), args if args else argparse.Namespace(display=None, ansi_size=None))
+        # --- Inline display (valid PNG) ---
+        if "ITERM_SESSION_ID" in os.environ:
+            buf = io.BytesIO()
+            canvas.save(buf, format="PNG")
+            data = base64.b64encode(buf.getvalue()).decode()
+            w, h = canvas.size
+            sys.stdout.write(f"\033]1337;File=inline=1;width={w}px;height={h}px;size={len(data)}:{data}\a\n")
+            sys.stdout.flush()
+        else:
+            canvas.show()
 
     except Exception as e:
         print(f"[ERROR] Failed to render inline histograms: {e}")
+
 
 def plot_scatter_csv(path: str, x_col: str, y_col: str, args=None) -> None:
     """A minimal, Pillow-based scatter plot"""
@@ -392,7 +421,6 @@ def plot_scatter_csv(path: str, x_col: str, y_col: str, args=None) -> None:
 
     except Exception as e:
         print(f"[ERROR] Scatter plot failed: {e}")
-
 
 # ---------------------------------------------------------------------
 # Raster handling
@@ -706,34 +734,52 @@ def render_vector(path, args):
 
     cmap = colormaps.get(args.colormap) if args.colormap else None
 
+    # -----------------------------------------------------------------
     # Plot
+    # -----------------------------------------------------------------
     try:
         if column and np.issubdtype(gdf[column].dtype, np.number):
             vmin, vmax = np.percentile(gdf[column].dropna(), (2, 98))
             print(f"[INFO] Coloring by '{column}' (range: {vmin:.2f}–{vmax:.2f})")
+
             norm = mpl.colors.Normalize(vmin=vmin, vmax=vmax)
             cmap = colormaps.get(args.colormap or "terrain")
 
-            # Detect geometry type
             geom_type = gdf.geom_type.iloc[0]
 
             if geom_type.startswith("Line"):
-                # Manually plot each feature with color
+                # Lines — colored directly by value, no fill
                 for _, row in gdf.iterrows():
                     val = row[column]
                     color = cmap(norm(val))
-                    ax.plot(*row.geometry.xy, color=color, linewidth=0.5)
+                    ax.plot(*row.geometry.xy, color=color, linewidth=getattr(args, "width", 0.7))
             else:
-                gdf.plot(ax=ax, column=column, cmap=cmap, vmin=vmin, vmax=vmax,
-                        linewidth=0.3, edgecolor="none", zorder=1)
-        else:
-            gdf.plot(ax=ax, facecolor="none", edgecolor=args.edgecolor,
-                    linewidth=getattr(args, "width", 0.7), zorder=1)
+                # Polygons — color fill with thin white outlines (like viewgeom dark theme)
+                gdf.plot(
+                    ax=ax,
+                    column=column,
+                    cmap=cmap,
+                    vmin=vmin,
+                    vmax=vmax,
+                    linewidth=0.2,
+                    edgecolor="white",   # match viewgeom’s dark-theme outline
+                    zorder=1
+                )
 
+        else:
+            # Default: outline-only mode (no fill)
+            gdf.plot(
+                ax=ax,
+                facecolor="none",
+                edgecolor=args.edgecolor,  # default #F6FF00
+                linewidth=getattr(args, "width", 0.7),
+                zorder=1
+            )
 
     except Exception as e:
         print(f"[WARN] Plotting failed ({e}) — fallback to border-only.")
         gdf.plot(ax=ax, facecolor="none", edgecolor="gray", linewidth=0.5)
+
 
     # Save to buffer (adaptive DPI)
     render_dpi = 200 if "ITERM_SESSION_ID" in os.environ else 400
@@ -766,7 +812,6 @@ def render_vector(path, args):
             img, scale = resize_to_terminal(img)
             print(f"[VIEW] Auto-fit display → {img.shape[1]}×{img.shape[0]}px (size={scale:.2f})")
 
-    # show_image_auto(img, args)
     show_inline_image(img, getattr(args, "display", None), is_vector=True)
 
 # ---------------------------------------------------------------------
@@ -870,11 +915,17 @@ def main() -> None:
 
     # CSV options
     parser.add_argument(
+    "--hist",
+    nargs="?",            # <- makes the argument optional
+    const=True,           # <- allows `--hist` with no value
+    help="Show histograms for all numeric columns or specify one column name."
+)
+    parser.add_argument(
         "--describe",
-        action="store_true",
-        help="Show numeric summary for CSV files (similar to pandas.describe)."
+        nargs="?",            # <- same idea
+        const=True,
+        help="Show summary statistics for all numeric columns or specify one column name."
     )
-    parser.add_argument("--hist", action="store_true", help="Plot histograms for numeric columns in CSV.")
     parser.add_argument(
     "--bins", type=int, default=20,
     help="Number of bins for CSV histograms (used with --hist)."
@@ -883,7 +934,6 @@ def main() -> None:
     "--scatter", nargs=2, metavar=("X", "Y"),
     help="Plot scatter of two numeric CSV columns (e.g. --scatter area_km2 year)."
     )
-
 
     # Vector options
     parser.add_argument(
@@ -954,12 +1004,27 @@ def main() -> None:
             if args.scatter:
                 plot_scatter_csv(paths[0], args.scatter[0], args.scatter[1], args=args)
                 return
+
             if args.describe or args.hist:
-                # Skip preview — go straight to summary or histogram
+                # --- Summary statistics ---
                 if args.describe:
-                    describe_csv(paths[0])
+                    if isinstance(args.describe, str):
+                        # describe specific column
+                        col = args.describe
+                        describe_csv(paths[0], column=col)
+                    else:
+                        # describe all numeric columns
+                        describe_csv(paths[0])
+
+                # --- Histograms ---
                 if args.hist:
-                    inline_histogram_csv(paths[0], bins=args.bins, args=args)
+                    if isinstance(args.hist, str):
+                        # single column histogram
+                        inline_histogram_csv(paths[0], column=args.hist, bins=args.bins, args=args)
+                    else:
+                        # all numeric columns
+                        inline_histogram_csv(paths[0], bins=args.bins, args=args)
+
             else:
                 # Default behavior: show preview only
                 preview_csv(paths[0])

@@ -22,10 +22,12 @@ viewinline path/to/file.tif
 viewinline path/to/vector.geojson
 viewinline R.tif G.tif B.tif                 # RGB composite
 viewinline path/to/multiband.tif --rgb-bands 3,2,1
-viewinline path/to/folder --gallery 4x3      # show image gallery (4x3 grid)
-viewinline data.csv --describe               # show numeric summary
-viewinline data.csv --hist                   # render inline histograms
-viewinline data.csv --scatter X Y  # scatter plot
+viewinline path/to/folder --gallery 4x3      # show image gallery (e.g. 4x3 grid)
+viewinline data.csv --describe               # show numeric summary for all numeric columns
+viewinline data.csv --describe Income        # show numeric summary for one column
+viewinline data.csv --hist                   # render histograms for all numeric columns
+viewinline data.csv --hist area_km2          # histogram for one column
+viewinline data.csv --scatter X Y            # scatter plot
 ```
 
 ## Features  
@@ -48,9 +50,12 @@ viewinline data.csv --scatter X Y  # scatter plot
 - GeoPackage (`.gpkg`)  
 
 **CSV**
-- Preview (--describe)
-- Histograms (--hist)
-- Scatter plots (--scatter x y [--marker dot|plus|x|square])
+- Preview file summary (rows, columns, and names)
+- Summary statistics with --describe
+- Show all numeric columns, or specify one (e.g. --describe height)
+- Inline histograms with --hist
+- Show all numeric columns, or specify one (e.g. --hist area_km2)
+- Scatter plots with --scatter X Y
 
 **Gallery view**
 - Display all images in a folder with --gallery 4x4
@@ -66,8 +71,9 @@ viewinline data.csv --scatter X Y  # scatter plot
   --rgb-bands RGB_BANDS
                         Comma-separated band numbers for RGB display (e.g., '3,2,1'). Overrides default 1-3.
   --gallery [GRID]      Display all PNG/JPG/TIF images in a folder as thumbnails (e.g., 5x5 grid).
-  --describe            Show numeric summary for CSV files (similar to pandas.describe). (default: False)
-  --hist                Plot histograms for numeric columns in CSV. (default: False)
+  --describe [DESCRIBE]
+                        Show summary statistics for all numeric columns or specify one column name (similar to pandas.describe).
+  --hist [HIST]         Show histograms for all numeric columns or specify one column name.
   --bins BINS           Number of bins for CSV histograms (used with --hist). (default: 20)
   --scatter X Y         Plot scatter of two numeric CSV columns (e.g. --scatter area_km2 year).
   --color-by COLOR_BY   Numeric column to color vector features by (optional).
