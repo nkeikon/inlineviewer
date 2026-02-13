@@ -23,7 +23,7 @@ import warnings
 
 warnings.filterwarnings("ignore", message="More than one layer found", category=UserWarning)
 
-__version__ = "0.1.4"
+__version__ = "0.1.5"
 
 AVAILABLE_COLORMAPS = [
     "viridis", "inferno", "magma", "plasma",
@@ -37,9 +37,15 @@ AVAILABLE_COLORMAPS = [
 def show_inline_image(image_array: np.ndarray, display_scale: float | None = None, is_vector: bool = False) -> None:
     """Display a numpy RGB image inline in iTerm2, with different scaling logic for raster vs vector."""
     try:
+        # buffer = BytesIO()
+        # Image.fromarray(image_array).save(buffer, format="PNG")
+        # encoded = base64.b64encode(buffer.getvalue()).decode("utf-8")
+
         buffer = BytesIO()
-        Image.fromarray(image_array).save(buffer, format="PNG")
+        # Use lower compression level for faster encoding (~4× faster)
+        Image.fromarray(image_array).save(buffer, format="PNG", compress_level=1, optimize=False)
         encoded = base64.b64encode(buffer.getvalue()).decode("utf-8")
+
 
         if display_scale is None:
             width_pct = 33  # same default for both
@@ -127,7 +133,42 @@ def preview_csv(path: str, max_rows: int = 10) -> None:
         # Show compact summary of columns
         # preview_names = ", ".join(header[:8]) + (" ..." if n_cols > 8 else "")
         preview_names = ", ".join(header)
-        print(f"[INFO] Columns: {preview_names}")
+        # print(f"[INFO] Columns: {preview_names}")
+
+        # --- New section here ---
+        import re
+        numeric_cols, categorical_cols = [], []
+        for col in header:
+            col_values = [r[i] for r in rows for i, h in enumerate(header) if h == col and r[i].strip() != ""]
+            sample = col_values[:20]
+            numeric_like = 0
+            for v in sample:
+                if re.match(r"^-?\d+(\.\d+)?$", v):
+                    numeric_like += 1
+            if sample and numeric_like / len(sample) >= 0.8:
+                numeric_cols.append(col)
+            else:
+                categorical_cols.append(col)
+
+        # --- Pretty two-column table ---
+        max_len = max(len(numeric_cols), len(categorical_cols))
+        num_list = numeric_cols + [""] * (max_len - len(numeric_cols))
+        cat_list = categorical_cols + [""] * (max_len - len(categorical_cols))
+
+        num_header = "Numeric columns"
+        cat_header = "Categorical columns"
+
+        num_width = max(len(num_header), max((len(c) for c in num_list), default=0))
+        cat_width = max(len(cat_header), max((len(c) for c in cat_list), default=0))
+
+        sep = f"+{'-'*(num_width+2)}+{'-'*(cat_width+2)}+"
+        print(sep)
+        print(f"| {num_header:<{num_width}} | {cat_header:<{cat_width}} |")
+        print(sep)
+        for n, c in zip(num_list, cat_list):
+            print(f"| {n:<{num_width}} | {c:<{cat_width}} |")
+        print(sep)
+
 
         # Ask user if they want to show the first rows
         ans = input("Preview first 10 rows? [y/N]: ").strip().lower()
@@ -428,16 +469,25 @@ def plot_scatter_csv(path: str, x_col: str, y_col: str, args=None) -> None:
 def normalize_to_uint8(band: np.ndarray) -> np.ndarray:
     band = band.astype(float)
     valid = np.isfinite(band)
+
     if not np.any(valid):
         return np.zeros_like(band, dtype=np.uint8)
-    mn, mx = np.percentile(
-        band[valid] if band[valid].size < 1_000_000 else np.random.choice(band[valid], 1_000_000, replace=False),
-        (2, 98)
-    )
+
+    valid_vals = band[valid]  # ← store once
+
+    if valid_vals.size < 1_000_000:
+        sample = valid_vals
+    else:
+        sample = np.random.choice(valid_vals, 1_000_000, replace=False)
+
+    mn, mx = np.percentile(sample, (2, 98))
+
     if mx <= mn:
         return np.zeros_like(band, dtype=np.uint8)
+
     band = np.clip((band - mn) / (mx - mn), 0, 1)
     band[~valid] = 0
+
     return (band * 255).astype(np.uint8)
 
 
@@ -456,7 +506,12 @@ def render_raster(paths: list[str], args) -> None:
             if ext in [".png", ".jpg", ".jpeg"]:
                 try:
                     # from PIL import Image
-                    img = Image.open(paths[0]).convert("RGB")
+                    # img = Image.open(paths[0]).convert("RGB")
+                    
+                    img = Image.open(paths[0])
+                    img.draft("RGB", (1200, 1200))  # decode at lower res if possible
+                    img = img.convert("RGB")
+
                     print(f"[DATA] Image loaded: {os.path.basename(paths[0])} ({img.width}×{img.height})")
 
                     if args.display:
@@ -520,22 +575,9 @@ def render_raster(paths: list[str], args) -> None:
                 # Single-band grayscale or colormap
                 band_idx = max(0, min(args.band - 1, band_count - 1))
                 band = normalize_to_uint8(data[band_idx])
+
                 print(f"[INFO] Displaying band {band_idx + 1} of {band_count}")
-                if args.colormap:
-                    cmap_name = args.colormap or "terrain"
-                    cmap = colormaps[cmap_name]
-                    colored = cmap(band / 255.0)
-                    img = (colored[:, :, :3] * 255).astype(np.uint8)
-                    print(f"[INFO] Applying colormap: {cmap_name}")
-                else:
-                    img = np.stack([band] * 3, axis=-1)
-                    print("[INFO] Displaying in grayscale (no colormap applied)")
 
-                band_idx = max(0, min(args.band - 1, data.shape[0] - 1))
-                band = normalize_to_uint8(data[band_idx])
-                print(f"[INFO] Displaying band {band_idx + 1} of {data.shape[0]}")
-
-                # Grayscale default
                 if args.colormap:
                     cmap_name = args.colormap or "terrain"
                     cmap = colormaps[cmap_name]
@@ -607,7 +649,7 @@ def render_gallery(folder: str, grid: str = "4x4", args=None) -> None:
 
         # --- Limit total images to grid size ---
         files = files[:nmax]
-        print(f"[INFO] Showing {len(files)} images ({cols}×{rows} grid)")
+        # print(f"[INFO] Showing {len(files)} images ({cols}×{rows} grid)")
 
         # --- Load each file as RGB thumbnail ---
         thumbs = []
@@ -792,9 +834,6 @@ def render_vector(path, args):
     img = np.array(Image.open(buf).convert("RGB"))
     # print(f"[PROC] Rendered vector") # (DPI={render_dpi})
 
-    # After reading fig into img
-    img = np.array(Image.open(buf).convert("RGB"))
-
     # --- Resize for terminal or manual override ---
     if getattr(args, "display", None):
         scale = float(args.display)
@@ -822,7 +861,7 @@ def show_image_auto(img: np.ndarray, args) -> None:
     if "ITERM_SESSION_ID" in os.environ:
         try:
             show_inline_image(img, getattr(args, "display", None))
-            print("[OK] Inline render complete.")
+            # print("[OK] Inline render complete.")
             return
         except Exception:
             print("[WARN] Inline display failed; trying ANSI fallback...")
@@ -934,6 +973,12 @@ def main() -> None:
     "--scatter", nargs=2, metavar=("X", "Y"),
     help="Plot scatter of two numeric CSV columns (e.g. --scatter area_km2 year)."
     )
+    parser.add_argument(
+    "--unique",
+    metavar="COLUMN",
+    help="Show unique values for a categorical column and exit"
+    )
+
 
     # Vector options
     parser.add_argument(
@@ -1001,6 +1046,43 @@ def main() -> None:
             return
 
         elif p.endswith(".csv"):
+
+            # --- Handle CSV unique values ---
+            if args.unique:
+                import csv
+
+                col = args.unique
+                with open(paths[0], newline="", encoding="utf-8") as f:
+                    reader = csv.DictReader(f)
+                    if col not in reader.fieldnames:
+                        print(f"[ERROR] Column '{col}' not found in dataset.")
+                        sys.exit(1)
+                    unique_vals = set()
+                    for row in reader:
+                        val = row.get(col)
+                        if val not in (None, "", " "):
+                            unique_vals.add(val)
+                print(f"[DATA] CSV file: {os.path.basename(paths[0])}")
+                print(f"[DATA] Unique values in '{col}' ({len(unique_vals)}):")
+
+                vals = sorted(unique_vals)
+                n = len(vals)
+
+                # Auto-select number of columns
+                ncols = 1 if n <= 10 else (2 if n <= 30 else 3)
+                nrows = (n + ncols - 1) // ncols
+
+                # Pad values to fill grid evenly
+                vals += [""] * (nrows * ncols - n)
+
+                # Print in columns
+                col_width = max(len(str(v)) for v in vals if v) + 2
+                for i in range(nrows):
+                    row = "".join(str(vals[i + j * nrows]).ljust(col_width) for j in range(ncols))
+                    print("  " + row.strip())
+
+                sys.exit(0)  # this ensures no preview prompt follows
+
             if args.scatter:
                 plot_scatter_csv(paths[0], args.scatter[0], args.scatter[1], args=args)
                 return
