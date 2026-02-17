@@ -3,12 +3,14 @@
 [![PyPI version](https://img.shields.io/pypi/v/viewinline)](https://pypi.org/project/viewinline/)
 [![Python version](https://img.shields.io/badge/python-%3E%3D3.9-blue.svg)](https://pypi.org/project/viewinline/)
 
-**Quick-look geospatial viewer for iTerm2.**  
-Displays rasters and vectors directly in the terminal - no GUI, no temporary files.
+**Quick-look geospatial viewer for compatible terminals.**  
+Displays rasters, vectors, and CSV data directly in the terminal with no GUI and no temporary files.
 
-This tool combines the core display logic of `viewtif` and `viewgeom`, but is **non-interactive**: you can’t zoom, pan, or switch colormaps on the fly. Instead, you control everything through command-line options (e.g. --display, --color-by, --colormap).
+Think of it as `ls` for geospatial files — designed for quick visual inspection at the command line, not a replacement for QGIS, ArcGIS, or analytical workflows.
 
-It’s designed for iTerm2 on macOS, using its inline image protocol to render a preview.
+This tool combines the core display logic of `viewtif` and `viewgeom`, but is **non-interactive**: you can't zoom, pan, or switch colormaps on the fly. Instead, you control everything through command-line options (e.g. --display, --color-by, --colormap).
+
+It uses the iTerm2 inline image protocol (OSC 1337) to render previews. In incompatible terminals, the escape codes are silently ignored with no errors or crashes.
 
 ## Installation  
 Requires Python 3.9 or later.  
@@ -16,6 +18,7 @@ Requires Python 3.9 or later.
 ```bash
 pip install viewinline
 ```
+
 ## Usage
 ```bash
 viewinline path/to/file.tif
@@ -23,17 +26,33 @@ viewinline path/to/vector.geojson
 viewinline R.tif G.tif B.tif                 # RGB composite
 viewinline path/to/multiband.tif --rgb-bands 3,2,1
 viewinline path/to/folder --gallery 4x3      # show image gallery (e.g. 4x3 grid)
-viewinline data.csv --describe               # show numeric summary for all numeric columns
-viewinline data.csv --describe Income        # show numeric summary for one column
-viewinline data.csv --hist                   # render histograms for all numeric columns
+viewinline data.csv                          # preview rows and columns
+viewinline data.csv --describe               # summary statistics for all numeric columns
+viewinline data.csv --describe Income        # summary statistics for one column
+viewinline data.csv --hist                   # histograms for all numeric columns
 viewinline data.csv --hist area_km2          # histogram for one column
 viewinline data.csv --scatter X Y            # scatter plot
+viewinline data.csv --where "year > 2010"    # filter rows
+viewinline data.csv --sort population        # sort rows
+viewinline data.csv --sql "SELECT * FROM data WHERE area > 100 ORDER BY year"  # full SQL
 ```
 
+## Compatible terminals
+
+The iTerm2 inline image protocol is supported by:
+
+- **iTerm2** (macOS)
+- **WezTerm** (cross-platform)
+- **Konsole** (Linux/KDE)
+- **Rio**, **Contour** (Linux)
+
+Not supported: Mac Terminal, GNOME Terminal, Kitty, Ghostty, Alacritty.
+
+> **Note:** Does not work inside tmux or screen.
+
 ## Features  
-- Displays rasters and vectors directly in the terminal  
-- Works with iTerm2 inline image protocol 
-- Non interactive: everything is controlled through command line options  
+- Previews rasters, vectors and CSV files directly in the terminal  
+- Non-interactive: everything is controlled through command-line options  
 
 ## Supported formats  
 **Rasters**  
@@ -51,50 +70,77 @@ viewinline data.csv --scatter X Y            # scatter plot
 
 **CSV**
 - Preview file summary (rows, columns, and names)
-- Summary statistics with --describe
-- Show all numeric columns, or specify one (e.g. --describe height)
-- Inline histograms with --hist
-- Show all numeric columns, or specify one (e.g. --hist area_km2)
-- Scatter plots with --scatter X Y
+- Summary statistics with `--describe`
+- Show all numeric columns, or specify one (e.g. `--describe height`)
+- Inline histograms with `--hist`
+- Show all numeric columns, or specify one (e.g. `--hist area_km2`)
+- Scatter plots with `--scatter X Y`
+- Filter rows with `--where`, sort with `--sort`, limit output with `--limit`
+- Full SQL queries with `--sql` (DuckDB required) — use `data` as the table name (e.g. `--sql "SELECT State, AVG(Income) FROM data GROUP BY State"`)
 
 **Gallery view**
-- Display all images in a folder with --gallery 4x4
+- Display all images in a folder with `--gallery 4x4`
 
-### Available options
-```bash
+## Dependencies
+
+Core dependencies (installed automatically):
+- `rasterio` — raster reading
+- `geopandas`, `pyogrio` — vector reading
+- `matplotlib` — vector rendering
+- `Pillow` — image encoding
+- `numpy`, `pandas` — data handling
+
+Optional:
+- `duckdb` — required for `--where`, `--sort`, `--sql`, and `--limit` with filtering. Install separately with `pip install duckdb`.
+
+## Available options
+```
+General:
   --display DISPLAY     Resize only the displayed image (0.5=smaller, 2=bigger). Default: auto-fit to terminal.
-  --ansi-size ANSI_SIZE
-                        ANSI fallback resolution. Try 180x90 or 200x100.
-  --band BAND           Band number to display (single raster case). (default: 1)
-  --colormap [{viridis,inferno,magma,plasma,cividis,terrain,RdYlGn,coolwarm,Spectral,cubehelix,tab10,turbo}]
-                        Apply colormap to single-band rasters or vector coloring. Flag without value → 'terrain'.
-  --rgb-bands RGB_BANDS
-                        Comma-separated band numbers for RGB display (e.g., '3,2,1'). Overrides default 1-3.
+
+Raster:
+  --band BAND           Band number to display for single-band rasters. (default: 1)
+  --colormap            Apply colormap to single-band rasters. Flag without value → 'terrain'.
+  --rgb-bands RGB_BANDS Comma-separated band numbers for RGB display (e.g., '3,2,1'). Overrides default 1-3.
+  --vmin VMIN           Minimum pixel value for raster display scaling.
+  --vmax VMAX           Maximum pixel value for raster display scaling.
+  --nodata NODATA       Override nodata value for rasters if dataset metadata is incorrect.
   --gallery [GRID]      Display all PNG/JPG/TIF images in a folder as thumbnails (e.g., 5x5 grid).
-  --describe [DESCRIBE]
-                        Show summary statistics for all numeric columns or specify one column name (similar to pandas.describe).
-  --hist [HIST]         Show histograms for all numeric columns or specify one column name.
-  --bins BINS           Number of bins for CSV histograms (used with --hist). (default: 20)
-  --scatter X Y         Plot scatter of two numeric CSV columns (e.g. --scatter area_km2 year).
-  --color-by COLOR_BY   Numeric column to color vector features by (optional).
-  --width WIDTH         Line width for vector boundaries (default: 0.7)
-  --edgecolor EDGECOLOR
-                        Edge color for vector outlines (hex or named color). (default: #F6FF00)
+
+Vector:
+  --color-by COLUMN     Column to color vector features by.
+  --colormap            Apply colormap to vector coloring. Flag without value → 'terrain'.
+  --width WIDTH         Line width for vector boundaries. (default: 0.7)
+  --edgecolor COLOR     Edge color for vector outlines (hex or named color). (default: #F6FF00)
   --layer LAYER         Layer name for GeoPackage or multi-layer files.
+
+CSV:
+  --describe [COLUMN]   Show summary statistics for all numeric columns or specify one column name.
+  --hist [COLUMN]       Show histograms for all numeric columns or specify one column name.
+  --bins BINS           Number of bins for histograms (used with --hist). (default: 20)
+  --scatter X Y         Plot scatter of two numeric CSV columns (e.g. --scatter area_km2 year).
+  --unique COLUMN       Show unique values for a categorical column.
+  --where EXPR          Filter rows using SQL WHERE clause (DuckDB required) (e.g. --where "year > 2010")
+  --sort COLUMN         Sort rows by values in the specified column, ascending by default. Use --desc to reverse.
+  --desc                Sort in descending order (used with --sort).
+  --limit N             Limit number of rows shown (e.g. --limit 100).
+  --select COLUMNS      Select specific columns (space separated) (e.g. --select Country City).
+  --sql QUERY           Execute full DuckDB SQL query. Use 'data' as the table name (e.g. --sql "SELECT * FROM data WHERE Poverty > 40").
 ```
 
-### ANSI/ASCII color preview
-If iTerm2 isn’t available, viewinline will automatically switch to an
-ANSI/ASCII color preview or save a quick PNG under /tmp/viewinline_preview.png.
+</small>
 
-This mode works on terminals with **ANSI color support** and may not display correctly on others.  
+## Need help?
+You can ask questions about usage via the documentation-based assistant:
 
-For compatible terminals, `viewinline` renders images in a very coarse resolution. This feature is experimental.
+👉 [Ask the viewtif + viewgeom + viewinline Helper](https://chatgpt.com/g/g-698b61c42f788191b884aed1b99dfcd8-viewtif-viewgeom-viewinline-helper)
+
+👉 For NASA staff: find 'viewtif + viewgeom + viewinline Helper' via the ChatGSFC Agent Marketplace
 
 ## License
-This project is released under the MIT License © 2025 Keiko Nomura.
+This project is released under the Apache License 2.0 © 2025 Keiko Nomura.
 
-If you find this tool useful, please consider supporting or acknowledging the author. 
+If you find this tool useful, please consider supporting or acknowledging it in your work. 
 
 ## Useful links
 - [YouTube demo playlist](https://www.youtube.com/playlist?list=PLP9MNCMgJIHj6FvahJ6Tembp1rCyhLtR4)

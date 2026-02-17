@@ -1,29 +1,35 @@
 #!/usr/bin/env python3
 """
-viewinline — quick-look geospatial viewer for iTerm2 / ANSI/ASCII preview.
+viewinline — quick-look geospatial viewer with inline image support.
 
 Supports:
   • Rasters (.tif, .tiff, .png, .jpg, .jpeg)
   • Vectors (.shp, .geojson, .gpkg)
-  • ANSI color preview in text-only terminals (half-block resolution)
+  • CSV (.csv) scatter plots and histograms
 
-Notes:
-  - iTerm2 inline images require ITERM_SESSION_ID.
-  - In HPC/text-only shells, switches to ANSI color preview.
+Display:
+  Sends iTerm2-style inline image escape sequences. Works in terminals that support
+  the iTerm2 inline image protocol (iTerm2, WezTerm, Konsole, etc.). In other
+  terminals, the escape codes are harmlessly ignored.
+  
+  No detection, no fallbacks. If images are not shown, it means that the terminal 
+  is not compatible.
 """
 
 import sys, os, base64, shutil, argparse
 from io import BytesIO
 import numpy as np
-from PIL import Image, ImageOps
+import pandas as pd
+from PIL import Image, ImageOps, ImageDraw, ImageFont
 from matplotlib import colormaps
 import matplotlib as mpl
 
 import warnings
 
 warnings.filterwarnings("ignore", message="More than one layer found", category=UserWarning)
+warnings.filterwarnings("ignore", message="Dataset has no geotransform", category=UserWarning)
 
-__version__ = "0.1.5"
+__version__ = "0.2.0"
 
 AVAILABLE_COLORMAPS = [
     "viridis", "inferno", "magma", "plasma",
@@ -35,64 +41,52 @@ AVAILABLE_COLORMAPS = [
 # Display utilities
 # ---------------------------------------------------------------------
 def show_inline_image(image_array: np.ndarray, display_scale: float | None = None, is_vector: bool = False) -> None:
-    """Display a numpy RGB image inline in iTerm2, with different scaling logic for raster vs vector."""
-    try:
-        # buffer = BytesIO()
-        # Image.fromarray(image_array).save(buffer, format="PNG")
-        # encoded = base64.b64encode(buffer.getvalue()).decode("utf-8")
+    """Encode image and write iTerm2 inline escape sequence to stdout.
 
-        buffer = BytesIO()
-        # Use lower compression level for faster encoding (~4× faster)
-        Image.fromarray(image_array).save(buffer, format="PNG", compress_level=1, optimize=False)
-        encoded = base64.b64encode(buffer.getvalue()).decode("utf-8")
+    Raises only if image encoding fails. Cannot detect whether the terminal
+    actually rendered the image.
+    """
+    buffer = BytesIO()
+    # Use lower compression level for performance in speed
+    Image.fromarray(image_array).save(buffer, format="PNG", compress_level=1, optimize=False)
+    encoded = base64.b64encode(buffer.getvalue()).decode("utf-8")
 
-
-        if display_scale is None:
-            width_pct = 33  # same default for both
+    if display_scale is None:
+        width_pct = 33  # same default for both
+    else:
+        if is_vector:
+            # For vectors, keep relative to base 33%
+            width_pct = int(33 * display_scale)
         else:
-            if is_vector:
-                # For vectors, keep relative to base 33%
-                width_pct = int(33 * display_scale)
-            else:
-                # For rasters, treat --display as absolute percentage
-                width_pct = int(100 * display_scale)
+            # For rasters, treat --display as absolute percentage
+            width_pct = int(100 * display_scale)
 
-        # Clamp range
-        width_pct = max(5, min(width_pct, 400))
+    # Clamp range
+    width_pct = max(5, min(width_pct, 400))
 
-        sys.stdout.write(f"\033]1337;File=inline=1;width={width_pct}%:{encoded}\a\n")
-        sys.stdout.flush()
-    except Exception as e:
-        print(f"[WARN] Inline display failed ({e})")
+    sys.stdout.write(f"\033]1337;File=inline=1;width={width_pct}%:{encoded}\a\n")
+    sys.stdout.flush()
 
 
-
-def show_ansi_preview(image_array: np.ndarray, width: int = 120, height: int = 60) -> None:
-    """ANSI preview using half-block characters (▀). Experimental"""
+def show_image_auto(img: np.ndarray, display_scale: float | None = None, is_vector: bool = False) -> None:
+    """Attempt inline image display. No fallbacks, no detection.
+    
+    Just sends the iTerm2 inline image escape sequence. If the terminal supports it,
+    great. If not, the escape codes are ignored and nothing happens.
+    
+    """
+    if os.environ.get("TMUX"):
+        print("[WARN] Inside tmux — inline images won't display even with allow-passthrough on (known iTerm2/tmux issue). Use a plain terminal tab.")
+        return
+    
     try:
-        img = Image.fromarray(image_array).resize((width, height * 2), Image.BILINEAR)
-        arr = np.array(img)
-        for y in range(0, arr.shape[0] - 1, 2):
-            top, bottom = arr[y], arr[y + 1]
-            line = "".join(
-                f"\033[38;2;{r1};{g1};{b1}m\033[48;2;{r2};{g2};{b2}m▀"
-                for (r1, g1, b1), (r2, g2, b2) in zip(top, bottom)
-            )
-            print(f"{line}\033[0m")
-
-        # sys.stdout.flush()
-        print("[OK] ANSI preview displayed.")
+        show_inline_image(img, display_scale, is_vector)
+        print("[VIEW] Image sent — visible in compatible terminals")
     except Exception as e:
-        print(f"[WARN] ANSI preview failed ({e}); saving file...")
-        save_image_to_tmp(image_array)
-
-
-def save_image_to_tmp(image_array: np.ndarray) -> str:
-    """Save to /tmp and print file path."""
-    outfile = "/tmp/viewinline_preview.png"
-    Image.fromarray(image_array).save(outfile)
-    print(f"[WARN] Inline not supported — saved preview to {outfile}")
-    return outfile
+        # If image encoding fails, print error but don't crash
+        print(f"[ERROR] Failed to encode image: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 def resize_to_terminal(img: np.ndarray) -> tuple[np.ndarray, float]:
@@ -110,377 +104,361 @@ def resize_to_terminal(img: np.ndarray) -> tuple[np.ndarray, float]:
 # ---------------------------------------------------------------------
 # CSV handling
 # ---------------------------------------------------------------------
-def preview_csv(path: str, max_rows: int = 10) -> None:
-    """Preview a CSV file"""
-    import csv, os
-    from itertools import islice
 
+# =============================================================
+# Core DataFrame loader (used everywhere)
+# =============================================================
+def load_csv_to_df(path: str) -> pd.DataFrame:
     try:
-        with open(path, newline='', encoding='utf-8') as f:
-            reader = csv.reader(f)
-            header = next(reader, [])
-            # Peek ahead to get sample rows and total count
-            rows = list(islice(reader, max_rows))
-            total_rows = sum(1 for _ in reader) + len(rows) + 1  # approximate count
-
-        if not header:
-            print(f"[ERROR] No header found in '{os.path.basename(path)}'")
-            return
-
-        n_cols = len(header)
-        print(f"[DATA] CSV file: {os.path.basename(path)} — {total_rows:,} rows × {n_cols} columns")
-
-        # Show compact summary of columns
-        # preview_names = ", ".join(header[:8]) + (" ..." if n_cols > 8 else "")
-        preview_names = ", ".join(header)
-        # print(f"[INFO] Columns: {preview_names}")
-
-        # --- New section here ---
-        import re
-        numeric_cols, categorical_cols = [], []
-        for col in header:
-            col_values = [r[i] for r in rows for i, h in enumerate(header) if h == col and r[i].strip() != ""]
-            sample = col_values[:20]
-            numeric_like = 0
-            for v in sample:
-                if re.match(r"^-?\d+(\.\d+)?$", v):
-                    numeric_like += 1
-            if sample and numeric_like / len(sample) >= 0.8:
-                numeric_cols.append(col)
-            else:
-                categorical_cols.append(col)
-
-        # --- Pretty two-column table ---
-        max_len = max(len(numeric_cols), len(categorical_cols))
-        num_list = numeric_cols + [""] * (max_len - len(numeric_cols))
-        cat_list = categorical_cols + [""] * (max_len - len(categorical_cols))
-
-        num_header = "Numeric columns"
-        cat_header = "Categorical columns"
-
-        num_width = max(len(num_header), max((len(c) for c in num_list), default=0))
-        cat_width = max(len(cat_header), max((len(c) for c in cat_list), default=0))
-
-        sep = f"+{'-'*(num_width+2)}+{'-'*(cat_width+2)}+"
-        print(sep)
-        print(f"| {num_header:<{num_width}} | {cat_header:<{cat_width}} |")
-        print(sep)
-        for n, c in zip(num_list, cat_list):
-            print(f"| {n:<{num_width}} | {c:<{cat_width}} |")
-        print(sep)
+        return pd.read_csv(path)
+    except Exception as e:
+        print(f"[ERROR] Failed to read CSV: {e}")
+        return pd.DataFrame()
 
 
-        # Ask user if they want to show the first rows
-        ans = input("Preview first 10 rows? [y/N]: ").strip().lower()
+# =============================================================
+# Preview
+# =============================================================
+def preview_df(df, max_rows: int = 10, query_mode: bool = False, filename: str = None) -> None:
+    """Preview a pandas DataFrame."""
+
+    if df is None or df.empty:
+        print("[WARN] No rows to preview.")
+        return
+
+    n_rows, n_cols = df.shape
+
+    # -------------------------------------------------------------
+    # Print dataset header (ONLY when not query mode)
+    # -------------------------------------------------------------
+    if not query_mode:
+        name = filename if filename else "DataFrame"
+        print(f"[DATA] CSV file: {name} — {n_rows:,} rows × {n_cols} columns")
+
+    # -------------------------------------------------------------
+    # Decide how many rows to show
+    # -------------------------------------------------------------
+    if n_rows <= max_rows:
+        rows_to_show = df
+    else:
+        ans = input(f"Preview first {max_rows} rows? [y/N]: ").strip().lower()
         if ans not in ("y", "yes"):
             return
+        rows_to_show = df.head(max_rows)
 
-        # Compute column widths based on sample
-        sample = [header] + rows
-        col_widths = [min(max(len(str(cell)) for cell in col), 22) for col in zip(*sample)]
+    # -------------------------------------------------------------
+    # Build pretty table
+    # -------------------------------------------------------------
+    columns = rows_to_show.columns.tolist()
 
-        # Build table
-        def fmt_row(row):
-            return "| " + " | ".join(f"{str(c)[:w]:<{w}}" for c, w in zip(row, col_widths)) + " |"
+    col_widths = []
+    for col in columns:
+        values = [str(col)] + rows_to_show[col].astype(str).tolist()
+        width = min(max(len(v) for v in values), 22)
+        col_widths.append(width)
 
-        sep = "+" + "+".join("-" * (w + 2) for w in col_widths) + "+"
+    def fmt_row(row):
+        return "| " + " | ".join(
+            f"{str(val)[:w]:<{w}}" for val, w in zip(row, col_widths)
+        ) + " |"
 
-        print(sep)
-        print(fmt_row(header))
-        print(sep)
-        for r in rows:
-            print(fmt_row(r))
-        print(sep)
+    sep = "+" + "+".join("-" * (w + 2) for w in col_widths) + "+"
 
-        if len(rows) == max_rows:
-            print(f"[INFO] Showing first {max_rows} rows (truncated).")
+    print(sep)
+    print(fmt_row(columns))
+    print(sep)
 
-    except Exception as e:
-        print(f"[ERROR] Failed to preview CSV: {e}")
+    for _, r in rows_to_show.iterrows():
+        print(fmt_row(r.tolist()))
+
+    print(sep)
+
+    print("[INFO] Use --describe for summary or --hist for histograms.")
+
+# =============================================================
+# Describe
+# =============================================================
+def describe_df(df, column=None):
+
+    if df is None or df.empty:
+        print("[WARN] No data rows found.")
+        return
+
+    numeric_df = df.select_dtypes(include="number")
+
+    if numeric_df.empty:
+        print("[INFO] No numeric columns found.")
+        return
+
+    if column:
+        if column not in numeric_df.columns:
+            print(f"[WARN] Column '{column}' not numeric.")
+            return
+        numeric_df = numeric_df[[column]]
+        print(f"[SUMMARY] Column '{column}' (describe):")
+    else:
+        print("[SUMMARY] Numeric columns (describe):")
+
+    headers = ["Column", "count", "mean", "std", "min", "25%", "50%", "75%", "max"]
+    col_widths = [12, 8, 10, 10, 10, 10, 10, 10, 10]
+
+    sep = "+" + "+".join("-" * (w + 2) for w in col_widths) + "+"
+    fmt = "| " + " | ".join(f"{{:<{w}}}" for w in col_widths) + " |"
+
+    print(sep)
+    print(fmt.format(*headers))
+    print(sep)
+
+    for name in numeric_df.columns:
+        vals = numeric_df[name].dropna().astype(float).values
+        if len(vals) == 0:
+            continue
+
+        vals.sort()
+        n = len(vals)
+
+        row = [
+            name[:12],
+            n,
+            f"{np.mean(vals):.3f}",
+            f"{np.std(vals, ddof=1) if n>1 else 0:.3f}",
+            f"{vals.min():.3f}",
+            f"{np.percentile(vals,25):.3f}",
+            f"{np.percentile(vals,50):.3f}",
+            f"{np.percentile(vals,75):.3f}",
+            f"{vals.max():.3f}",
+        ]
+
+        print(fmt.format(*row))
+
+    print(sep)
+
+# =============================================================
+# Histogram
+# =============================================================
+def inline_histogram_df(df, column=None, bins=20, display_scale=None, is_vector=False):
+
+    if df is None or df.empty:
+        print("[WARN] No data to plot.")
+        return
+
+    numeric_df = df.select_dtypes(include="number")
+
+    if numeric_df.empty:
+        print("[INFO] No numeric columns found.")
+        return
+
+    if column:
+        if column not in numeric_df.columns:
+            print(f"[WARN] Column '{column}' not numeric.")
+            return
+        cols = [(column, numeric_df[column].dropna().values)]
+    else:
+        cols = [(c, numeric_df[c].dropna().values) for c in numeric_df.columns]
+
+    draw_histograms(cols, bins, display_scale, is_vector)
 
 
-def describe_csv(path: str, column: str = None) -> None:
-    """Compute simple descriptive stats for numeric columns (no pandas)."""
-    import csv
+def draw_histograms(cols, bins, display_scale=None, is_vector=False):
+    """Render histograms and display via unified show_image_auto()"""
     import math
-    import statistics
+
+    if not cols:
+        print("[INFO] No numeric columns found.")
+        return
+
+    if len(cols) == 1:
+        per_row = 1
+        w, h = 400, 200
+    else:
+        per_row = 2
+        w, h = 300, 180
+
+    margin = 40
+    nrows = math.ceil(len(cols) / per_row)
+    total_w = per_row * w + (per_row + 1) * margin
+    total_h = nrows * h + (nrows + 1) * margin
+
+    canvas = Image.new("RGB", (total_w, total_h), (220, 220, 220))
+    draw = ImageDraw.Draw(canvas)
 
     try:
-        with open(path, newline='', encoding='utf-8') as f:
-            reader = csv.DictReader(f)
-            data = list(reader)
-
-        if not data:
-            print("[WARN] No data rows found.")
-            return
-
-        # Collect numeric columns
-        numeric_cols = {}
-        for row in data:
-            for key, val in row.items():
-                try:
-                    num = float(val)
-                    if math.isfinite(num):
-                        numeric_cols.setdefault(key, []).append(num)
-                except (ValueError, TypeError):
-                    continue
-
-        if not numeric_cols:
-            print("[INFO] No numeric columns found.")
-            return
-
-        # --- If a specific column is requested ---
-        if column:
-            if column not in numeric_cols:
-                print(f"[WARN] Column '{column}' not found or not numeric.")
-                return
-            numeric_cols = {column: numeric_cols[column]}
-            print(f"[SUMMARY] Column '{column}' (describe):")
-        else:
-            print(f"[SUMMARY] Numeric columns (describe):")
-
-        # Prepare table header
-        headers = ["Column", "count", "mean", "std", "min", "25%", "50%", "75%", "max"]
-        col_widths = [12, 8, 10, 10, 10, 10, 10, 10, 10]
-        sep = "+" + "+".join("-" * (w + 2) for w in col_widths) + "+"
-        fmt = "| " + " | ".join(f"{{:<{w}}}" for w in col_widths) + " |"
-
-        print(sep)
-        print(fmt.format(*headers))
-        print(sep)
-
-        # Compute and print stats per column
-        for name, vals in numeric_cols.items():
-            vals.sort()
-            n = len(vals)
-            mean = statistics.fmean(vals)
-            std = statistics.stdev(vals) if n > 1 else 0
-            q25 = vals[int(0.25 * (n - 1))]
-            q50 = vals[int(0.5 * (n - 1))]
-            q75 = vals[int(0.75 * (n - 1))]
-            row = [
-                name[:12],
-                n,
-                f"{mean:.3f}",
-                f"{std:.3f}",
-                f"{min(vals):.3f}",
-                f"{q25:.3f}",
-                f"{q50:.3f}",
-                f"{q75:.3f}",
-                f"{max(vals):.3f}",
-            ]
-            print(fmt.format(*row))
-
-        print(sep)
-
-    except Exception as e:
-        print(f"[ERROR] Failed to describe CSV: {e}")
-
-
-def inline_histogram_csv(path: str, column: str = None, bins: int = 20, args=None) -> None:
-    """Render inline histograms for numeric CSV columns (single or multiple)."""
-    import csv, math, io, base64, sys
-    import numpy as np
-    from PIL import Image, ImageDraw, ImageFont
-    from matplotlib import colormaps
-
-    try:
-        # --- Read CSV ---
-        with open(path, newline='', encoding='utf-8') as f:
-            reader = csv.DictReader(f)
-            data = list(reader)
-        if not data:
-            print("[WARN] No data found.")
-            return
-
-        # --- Extract numeric columns ---
-        numeric_cols = {}
-        for row in data:
-            for key, val in row.items():
-                try:
-                    num = float(val)
-                    if math.isfinite(num):
-                        numeric_cols.setdefault(key, []).append(num)
-                except (ValueError, TypeError):
-                    continue
-        if not numeric_cols:
-            print("[INFO] No numeric columns found.")
-            return
-
-        # --- Select column(s) ---
-        if column:
-            if column not in numeric_cols:
-                print(f"[WARN] Column '{column}' not found or not numeric.")
-                return
-            cols = [(column, numeric_cols[column])]
-        else:
-            cols = list(numeric_cols.items())
-            print(f"[INFO] Found {len(cols)} numeric columns. Rendering inline histograms...")
-
-        # --- Settings ---
-        w, h = 300, 180  # per histogram
-        margin = 40
-        bg_color = (220, 220, 220)
-        text_color = (30, 30, 30)
+        font = ImageFont.load_default()
+    except Exception:
         font = None
-        try:
-            font = ImageFont.load_default()
-        except Exception:
-            pass
 
-        # --- Layout ---
-        if len(cols) == 1:
-            per_row = 1
-            w, h = 400, 200   # make single plot a bit larger
+    for i, (col, vals) in enumerate(cols):
+
+        vals = np.array(vals, dtype=float)
+        if len(vals) == 0:
+            continue
+
+        counts, edges = np.histogram(vals, bins=bins)
+
+        idx = np.argmax(counts)
+        print(f"[INFO] Column: {col}")
+        print(f"       Most frequent range: {edges[idx]:.2f} – {edges[idx+1]:.2f}")
+        print(f"       Values in this range: {counts[idx]}")
+
+        counts = counts.astype(float)
+        counts /= counts.max() if counts.max() else 1
+
+        row_i = i // per_row
+        col_i = i % per_row
+        x0 = margin + col_i * (w + margin)
+        y0 = margin + row_i * (h + margin)
+
+        # Draw column title
+        title = col[:22]
+
+        if font:
+            tw, th = draw.textbbox((0,0), title, font=font)[2:]
         else:
-            per_row = 2
-            w, h = 300, 180
+            tw, th = draw.textsize(title)
 
-        nrows = math.ceil(len(cols) / per_row)
-        total_w = per_row * w + (per_row + 1) * margin
-        total_h = nrows * h + (nrows + 1) * margin
-        canvas = Image.new("RGB", (total_w, total_h), bg_color)
-        draw = ImageDraw.Draw(canvas)
+        draw.text(
+            (x0 + (w - tw) / 2, y0 - 25),
+            title,
+            fill=(40, 40, 40),
+            font=font
+        )
 
-        # --- Draw each histogram ---
-        for i, (col, vals) in enumerate(cols):
-            row_i = i // per_row
-            col_i = i % per_row
-            x0 = margin + col_i * (w + margin)
-            y0 = margin + row_i * (h + margin)
-            counts, _ = np.histogram(vals, bins=bins)
-            counts = counts.astype(float)
-            counts /= counts.max() if counts.max() else 1
+        bw = w / bins
+        base_y = y0 + h - 25
+        cmap = colormaps["viridis"]
 
-            cmap = colormaps["viridis"]
-            bw = w / bins
-            base_y = y0 + h - 25
-            max_count = max(counts) if counts.max() else 1
+        for j, c in enumerate(counts):
+            bar_h = int(c * (h - 50))
+            x1 = int(x0 + j * bw)
+            x2 = int(x1 + bw - 1)
+            y1 = int(base_y - bar_h)
+            color = tuple(int(x * 255) for x in cmap(c)[:3])
+            draw.rectangle([x1, y1, x2, base_y], fill=color)
 
-            for j, c in enumerate(counts):
-                bar_h = int(c * (h - 50))
-                x1 = int(x0 + j * bw)
-                x2 = int(x1 + bw - 1)
-                y1 = int(base_y - bar_h)
-                normalized_height = c / max_count
-                color = tuple(int(x * 255) for x in cmap(normalized_height)[:3])
-                draw.rectangle([x1, y1, x2, base_y], fill=color)
+        mn = edges[0]
+        mx = edges[-1]
 
-            # Axes & labels
-            draw.line([x0, base_y, x0 + w, base_y], fill=(120, 120, 120), width=1)
-            draw.line([x0, y0 + 25, x0, base_y], fill=(120, 120, 120), width=1)
-            draw.text((x0 + 4, y0 + 4), col[:16], fill=text_color, font=font)
-            mn, mx = min(vals), max(vals)
-            draw.text((x0 + 2, base_y + 5), f"{mn:.1f}", fill=(90, 90, 90), font=font)
-            draw.text((x0 + w - 35, base_y + 5), f"{mx:.1f}", fill=(90, 90, 90), font=font)
+        def fmt(v):
+            if float(v).is_integer():
+                return f"{int(v)}"
+            return f"{v:.2f}"
 
-        # --- Inline display (valid PNG) ---
-        if "ITERM_SESSION_ID" in os.environ:
-            buf = io.BytesIO()
-            canvas.save(buf, format="PNG")
-            data = base64.b64encode(buf.getvalue()).decode()
-            w, h = canvas.size
-            sys.stdout.write(f"\033]1337;File=inline=1;width={w}px;height={h}px;size={len(data)}:{data}\a\n")
-            sys.stdout.flush()
-        else:
-            canvas.show()
+        draw.text((x0 + 2, base_y + 5), fmt(mn), fill=(90,90,90), font=font)
+        draw.text((x0 + w - 55, base_y + 5), fmt(mx), fill=(90,90,90), font=font)
 
-    except Exception as e:
-        print(f"[ERROR] Failed to render inline histograms: {e}")
+    # Convert to numpy array and use unified display
+    img_array = np.array(canvas)
+    show_image_auto(img_array, display_scale, is_vector)
 
 
-def plot_scatter_csv(path: str, x_col: str, y_col: str, args=None) -> None:
-    """A minimal, Pillow-based scatter plot"""
-    import pandas as pd
-    import numpy as np
-    from PIL import Image, ImageDraw, ImageFont
+# =============================================================
+# Scatter
+# =============================================================
+def plot_scatter_df(df, x_col: str, y_col: str, display_scale=None, is_vector=False):
     import io
 
+    if df is None or df.empty:
+        print("[WARN] No data to plot.")
+        return
+
+    if x_col not in df.columns or y_col not in df.columns:
+        print(f"[ERROR] Columns '{x_col}' or '{y_col}' not found.")
+        return
+
+    df = df[[x_col, y_col]].apply(pd.to_numeric, errors="coerce").dropna()
+    if df.empty:
+        print("[WARN] No numeric values to plot.")
+        return
+
+    w, h = 420, 300
+    margin = 40
+
+    img = Image.new("RGB", (w, h), (220, 220, 220))
+    draw = ImageDraw.Draw(img)
+
     try:
-        df = pd.read_csv(path)
+        font = ImageFont.load_default()
+    except Exception:
+        font = None
 
-        if x_col not in df.columns or y_col not in df.columns:
-            print(f"[ERROR] Columns '{x_col}' or '{y_col}' not found.")
-            print(f"[INFO] Available columns: {', '.join(df.columns)}")
-            return
+    x_vals = df[x_col].to_numpy()
+    y_vals = df[y_col].to_numpy()
 
-        # --- Filter and sanitize numeric values ---
-        df = df[[x_col, y_col]].apply(pd.to_numeric, errors="coerce").dropna()
-        if df.empty:
-            print("[WARN] No numeric values to plot.")
-            return
+    x_min, x_max = x_vals.min(), x_vals.max()
+    y_min, y_max = y_vals.min(), y_vals.max()
 
-        # --- Settings (tight and consistent with histograms) ---
-        w, h = 420, 300  # smaller, compact
-        margin = 40
-        bg_color = (220, 220, 220)
-        axis_color = (100, 100, 100)
-        point_color = (70, 130, 180)
-        text_color = (25, 25, 25)
+    if x_max == x_min or y_max == y_min:
+        print("[WARN] Scatter plot requires at least two distinct values.")
+        return
 
-        img = Image.new("RGB", (w, h), bg_color)
-        draw = ImageDraw.Draw(img)
+    def scale_x(x):
+        return margin + (x - x_min) / (x_max - x_min) * (w - 2 * margin)
 
-        try:
-            font = ImageFont.load_default()
-        except Exception:
-            font = None
+    def scale_y(y):
+        return h - margin - (y - y_min) / (y_max - y_min) * (h - 2 * margin)
 
-        # --- Normalize data ---
-        x_vals, y_vals = df[x_col].to_numpy(), df[y_col].to_numpy()
-        x_min, x_max = np.nanmin(x_vals), np.nanmax(x_vals)
-        y_min, y_max = np.nanmin(y_vals), np.nanmax(y_vals)
+    draw.line([(margin, h - margin), (w - margin, h - margin)], fill=(100,100,100))
+    draw.line([(margin, h - margin), (margin, margin)], fill=(100,100,100))
 
-        def scale_x(x):
-            return margin + (x - x_min) / (x_max - x_min) * (w - 2 * margin)
+    for x, y in zip(x_vals, y_vals):
+        px, py = scale_x(x), scale_y(y)
+        s = 1.5
+        draw.line([(px - s, py), (px + s, py)], fill=(70,130,180))
+        draw.line([(px, py - s), (px, py + s)], fill=(70,130,180))
 
-        def scale_y(y):
-            return h - margin - (y - y_min) / (y_max - y_min) * (h - 2 * margin)
+    draw.text((margin + 2, h - margin + 8), x_col[:14], fill=(25,25,25), font=font)
+    draw.text((6, margin - 15), y_col[:14], fill=(25,25,25), font=font)
 
-        # --- Axes only (no interior grid) ---
-        draw.line([(margin, h - margin), (w - margin, h - margin)], fill=axis_color, width=1)
-        draw.line([(margin, h - margin), (margin, margin)], fill=axis_color, width=1)
+    # Add min / max axis labels
+    def fmt(v):
+        if abs(v) >= 1000:
+            return f"{int(v):,}"
+        if float(v).is_integer():
+            return f"{int(v)}"
+        return f"{v:.2f}"
 
-        # --- Scatter points ---
-        for x, y in zip(x_vals, y_vals):
-            px, py = scale_x(x), scale_y(y)
-            s = 1.5  # point size
-            # draw.ellipse([px - 1.5, py - 1.5, px + 1.5, py + 1.5], fill=point_color) #regular dots
-            draw.line([(px - s, py), (px + s, py)], fill=point_color, width=1)
-            draw.line([(px, py - s), (px, py + s)], fill=point_color, width=1)
+    draw.text((margin, h - margin + 20), fmt(x_min), fill=(90,90,90), font=font)
+    draw.text((w - margin - 50, h - margin + 20), fmt(x_max), fill=(90,90,90), font=font)
+    draw.text((5, h - margin - 5), fmt(y_min), fill=(90,90,90), font=font)
+    draw.text((5, margin - 5), fmt(y_max), fill=(90,90,90), font=font)
 
-        # --- Axis labels ---
-        draw.text((margin + 2, h - margin + 8), x_col[:14], fill=text_color, font=font)
-        draw.text((6, margin - 15), y_col[:14], fill=text_color, font=font)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
 
-        # --- Inline display ---
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
-        buf.seek(0)
-        from numpy import array
-        show_image_auto(np.array(Image.open(buf)), args if args else argparse.Namespace(display=None, ansi_size=None))
-
-    except Exception as e:
-        print(f"[ERROR] Scatter plot failed: {e}")
+    show_image_auto(np.array(Image.open(buf)), display_scale, is_vector)
 
 # ---------------------------------------------------------------------
 # Raster handling
 # ---------------------------------------------------------------------
-def normalize_to_uint8(band: np.ndarray) -> np.ndarray:
+def normalize_to_uint8(band: np.ndarray, vmin=None, vmax=None, nodata=None) -> np.ndarray:
     band = band.astype(float)
+
+    # Start with finite pixels
     valid = np.isfinite(band)
+
+    # Apply nodata override if provided
+    if nodata is not None:
+        valid &= (band != nodata)
 
     if not np.any(valid):
         return np.zeros_like(band, dtype=np.uint8)
 
-    valid_vals = band[valid]  # ← store once
+    valid_vals = band[valid]
 
-    if valid_vals.size < 1_000_000:
-        sample = valid_vals
+    # --- Manual scaling ---
+    if vmin is not None and vmax is not None:
+        mn, mx = vmin, vmax
+        print(f"[VIEW] Using manual scaling: {mn} to {mx}")
+
+    # --- Percentile fallback ---
     else:
-        sample = np.random.choice(valid_vals, 1_000_000, replace=False)
+        if valid_vals.size < 1_000_000:
+            sample = valid_vals
+        else:
+            sample = np.random.choice(valid_vals, 1_000_000, replace=False)
 
-    mn, mx = np.percentile(sample, (2, 98))
+        mn, mx = np.percentile(sample, (2, 98))
 
     if mx <= mn:
         return np.zeros_like(band, dtype=np.uint8)
@@ -489,6 +467,35 @@ def normalize_to_uint8(band: np.ndarray) -> np.ndarray:
     band[~valid] = 0
 
     return (band * 255).astype(np.uint8)
+
+
+def render_simple_image(filepath: str, args) -> None:
+    """Render a simple PNG/JPG image using PIL (no geospatial processing)."""
+    try:
+        img_pil = Image.open(filepath)
+        img_array = np.array(img_pil)
+        
+        # Handle different formats
+        if img_array.ndim == 2:
+            img_array = np.stack([img_array] * 3, axis=-1)
+        elif img_array.shape[2] == 4:
+            img_array = img_array[:, :, :3]
+        
+        H, W = img_array.shape[:2]
+        print(f"[DATA] Image loaded: {os.path.basename(filepath)} ({W}×{H})")
+        
+        if args.display:
+            new_w, new_h = max(1, int(W * args.display)), max(1, int(H * args.display))
+            img_array = np.array(Image.fromarray(img_array).resize((new_w, new_h), Image.BILINEAR))
+            print(f"[VIEW] Manual resize ×{args.display:.2f} → {new_w}×{new_h}px")
+        else:
+            img_array, scale = resize_to_terminal(img_array)
+            print(f"[VIEW] Rendered image size → {img_array.shape[1]}×{img_array.shape[0]}px (size={scale:.2f})")
+        
+        show_image_auto(img_array, getattr(args, "display", None), is_vector=False)
+        
+    except Exception as e:
+        print(f"[ERROR] Failed to load image: {e}")
 
 
 def render_raster(paths: list[str], args) -> None:
@@ -501,92 +508,93 @@ def render_raster(paths: list[str], args) -> None:
 
     try:
         if len(paths) == 1:
-            # --- Quick display for standard images (PNG, JPG, JPEG, TIFF)
-            ext = os.path.splitext(paths[0].lower())[1]
-            if ext in [".png", ".jpg", ".jpeg"]:
-                try:
-                    # from PIL import Image
-                    # img = Image.open(paths[0]).convert("RGB")
-                    
-                    img = Image.open(paths[0])
-                    img.draft("RGB", (1200, 1200))  # decode at lower res if possible
-                    img = img.convert("RGB")
-
-                    print(f"[DATA] Image loaded: {os.path.basename(paths[0])} ({img.width}×{img.height})")
-
-                    if args.display:
-                        new_w = int(img.width * args.display)
-                        new_h = int(img.height * args.display)
-                        img = img.resize((new_w, new_h), Image.BILINEAR)
-                        print(f"[VIEW] Manual resize ×{args.display:.2f} → {new_w}×{new_h}px")
-                    else:
-                        img, scale = resize_to_terminal(np.array(img))
-                        print(f"[VIEW] Auto-fit display → {img.shape[1]}×{img.shape[0]}px (size={scale:.2f})")
-
-                    show_image_auto(np.array(img), args)
-                    return  # stop here — no rasterio needed
-                except Exception as e:
-                    print(f"[ERROR] Failed to render image file: {e}")
-                    return
 
             with rasterio.open(paths[0]) as ds:
                 H, W = ds.height, ds.width
                 print(f"[DATA] Raster loaded: {os.path.basename(paths[0])} ({W}×{H})")
 
+                band_count = ds.count
+
+                # Downsample for performance
                 max_dim = 2000
+
                 if max(H, W) > max_dim:
                     scale = max_dim / max(H, W)
-                    out_h, out_w = int(H * scale), int(W * scale)
+                    out_h = int(H * scale)
+                    out_w = int(W * scale)
+
                     data = ds.read(
-                        out_shape=(ds.count, out_h, out_w),
+                        out_shape=(band_count, out_h, out_w),
                         resampling=rasterio.enums.Resampling.bilinear
                     )
-                    print(f"[PROC] Downsampled → {out_w}×{out_h}px (scale={scale:.3f})")
+
+                    print(f"[PROC] Downsampled for preview → {out_w}×{out_h}px (scale={scale:.3f})")
                 else:
                     data = ds.read()
 
-            # Handle multi-band rasters
-            band_count = data.shape[0]
+            # MULTI BAND
             if band_count >= 3:
-                print(f"[INFO] Multi-band raster detected ({band_count} bands).")
 
-                # List available bands
-                band_list = ", ".join([str(i + 1) for i in range(band_count)])
-                print(f"[INFO] Available bands: {band_list}")
+                print(f"[INFO] Multi-band raster detected ({band_count} bands)")
 
-                # Parse --rgb-bands if provided
                 if getattr(args, "rgb_bands", None):
                     try:
                         rgb_idx = [int(b) - 1 for b in args.rgb_bands.split(",")]
-                        if len(rgb_idx) != 3 or any(i < 0 or i >= band_count for i in rgb_idx):
+                        if len(rgb_idx) != 3:
                             raise ValueError
-                        print(f"[INFO] Using specified RGB bands: {args.rgb_bands}")
+                        print(f"[INFO] Using RGB bands: {args.rgb_bands}")
                     except Exception:
-                        print("[WARN] Invalid --rgb-bands format. Expected like '3,2,1'. Using default 1–3.")
+                        print("[WARN] Invalid --rgb-bands. Using default 1,2,3")
                         rgb_idx = [0, 1, 2]
                 else:
                     rgb_idx = [0, 1, 2]
-                    print("[INFO] Defaulting to first three bands (1–3) for RGB display.")
 
-                rgb = np.stack([normalize_to_uint8(data[i]) for i in rgb_idx], axis=-1)
+                rgb = np.stack([
+                    normalize_to_uint8(
+                        data[i],
+                        vmin=args.vmin,
+                        vmax=args.vmax,
+                        nodata=args.nodata
+                    )
+                    for i in rgb_idx
+                ], axis=-1)
+
                 img = rgb
 
+            # SINGLE BAND
             else:
-                # Single-band grayscale or colormap
-                band_idx = max(0, min(args.band - 1, band_count - 1))
-                band = normalize_to_uint8(data[band_idx])
 
-                print(f"[INFO] Displaying band {band_idx + 1} of {band_count}")
+                band_idx = max(0, min(args.band - 1, band_count - 1))
+                raw_band = data[band_idx].astype(float)
+
+                # mask nodata
+                nodata_val = args.nodata if args.nodata is not None else None
+                if nodata_val is not None:
+                    raw_band[raw_band == nodata_val] = np.nan
+
+                # Compute preview range
+                if np.any(np.isfinite(raw_band)):
+                    min_val = np.nanmin(raw_band)
+                    max_val = np.nanmax(raw_band)
+                    print(f"[DATA] Value range (preview): {min_val:.3f} → {max_val:.3f}")
+                else:
+                    print("[WARN] No valid pixels found.")
+
+                band = normalize_to_uint8(
+                    raw_band,
+                    vmin=args.vmin,
+                    vmax=args.vmax,
+                    nodata=args.nodata
+                )
 
                 if args.colormap:
-                    cmap_name = args.colormap or "terrain"
-                    cmap = colormaps[cmap_name]
+                    cmap = colormaps[args.colormap]
                     colored = cmap(band / 255.0)
                     img = (colored[:, :, :3] * 255).astype(np.uint8)
-                    print(f"[INFO] Applying colormap: {cmap_name}")
+                    print(f"[INFO] Applying colormap: {args.colormap}")
                 else:
                     img = np.stack([band] * 3, axis=-1)
-                    print("[INFO] Displaying in grayscale (no colormap applied)")
+                    print("[INFO] Displaying grayscale")
 
         elif len(paths) == 3:
             bands = []
@@ -615,31 +623,27 @@ def render_raster(paths: list[str], args) -> None:
             print(f"[VIEW] Manual resize ×{args.display:.2f} → {new_w}×{new_h}px")
         else:
             img, scale = resize_to_terminal(img)
-            print(f"[VIEW] Auto-fit display → {img.shape[1]}×{img.shape[0]}px (size={scale:.2f})")
+            print(f"[VIEW] Rendered image size → {img.shape[1]}×{img.shape[0]}px (size={scale:.2f})")
 
-        # show_image_auto(img, args)
-        show_inline_image(img, getattr(args, "display", None), is_vector=False)
-
+        # Use unified display
+        show_image_auto(img, getattr(args, "display", None), is_vector=False)
 
     except Exception as e:
         print(f"[ERROR] Raster rendering failed: {e}")
 
-def render_gallery(folder: str, grid: str = "4x4", args=None) -> None:
+def render_gallery(folder: str, grid: str = "4x4", display_scale=None, is_vector=False) -> None:
     """Render a folder of rasters/images as small thumbnails in a grid."""
     import math
-    from PIL import Image
-    import numpy as np
-    import os
 
     try:
-        # --- Parse grid ---
+        # Parse grid
         try:
             cols, rows = map(int, grid.lower().split("x"))
         except Exception:
             cols, rows = 4, 4
         nmax = cols * rows
 
-        # --- Collect files ---
+        # Collect files
         exts = (".png", ".jpg", ".jpeg", ".tif", ".tiff")
         files = [os.path.join(folder, f) for f in sorted(os.listdir(folder))
                  if f.lower().endswith(exts)]
@@ -647,11 +651,9 @@ def render_gallery(folder: str, grid: str = "4x4", args=None) -> None:
             print(f"[WARN] No image/raster files found in {folder}")
             return
 
-        # --- Limit total images to grid size ---
         files = files[:nmax]
-        # print(f"[INFO] Showing {len(files)} images ({cols}×{rows} grid)")
 
-        # --- Load each file as RGB thumbnail ---
+        # Load thumbnails
         thumbs = []
         thumb_size = (128, 128)
         for f in files:
@@ -678,15 +680,15 @@ def render_gallery(folder: str, grid: str = "4x4", args=None) -> None:
             print("[WARN] No valid images loaded.")
             return
 
-        # --- Create adaptive grid canvas (gray background) ---
+        # Create grid canvas
         n = len(thumbs)
         cols = min(cols, n)
         rows = math.ceil(n / cols)
         w, h = thumb_size
-        margin = 8  # slightly tighter spacing
+        margin = 8
         canvas_w = cols * w + (cols + 1) * margin
         canvas_h = rows * h + (rows + 1) * margin
-        canvas = Image.new("RGB", (canvas_w, canvas_h), (220, 220, 220))  # gray background
+        canvas = Image.new("RGB", (canvas_w, canvas_h), (220, 220, 220))
 
         for i, img in enumerate(thumbs):
             r, c = divmod(i, cols)
@@ -695,7 +697,7 @@ def render_gallery(folder: str, grid: str = "4x4", args=None) -> None:
             canvas.paste(img, (x, y))
 
         print(f"[INFO] Displaying {n} images ({cols}×{rows} grid)")
-        show_image_auto(np.array(canvas), args if args else argparse.Namespace(display=None, ansi_size=None))
+        show_image_auto(np.array(canvas), display_scale, is_vector)
 
     except Exception as e:
         print(f"[ERROR] Failed to render gallery: {e}")
@@ -714,9 +716,8 @@ def render_vector(path, args):
         return
 
     try:
-        # layers = list_layers(path)
+        # Handle layer selection
         if path.lower().endswith((".shp", ".geojson", ".json", ".parquet", ".geoparquet")):
-            # Common single-layer formats — skip list_layers() call
             layers = [(os.path.splitext(os.path.basename(path))[0], None)]
         else:
             layers = list_layers(path)
@@ -739,24 +740,30 @@ def render_vector(path, args):
         print(f"[ERROR] Failed to read vector: {e}")
         return
 
-    # Detect numeric columns
-    num_cols = []
-    for c in gdf.columns:
-        if c == gdf.geometry.name:
-            continue
-        try:
-            if np.issubdtype(gdf[c].dtype, np.number):
-                num_cols.append(c)
-        except TypeError:
-            continue
+    # Detect non-geometry columns
+    all_cols = [c for c in gdf.columns if c != gdf.geometry.name]
 
-    if num_cols:
-        print("[INFO] Numeric columns detected:", ", ".join(num_cols))
+    if all_cols:
+        n = len(all_cols)
+        print(f"[INFO] Available columns ({n}):")
+        if n <= 20:
+            for c in all_cols:
+                print(f"  {c}")
+        else:
+            ncols = 2 if n <= 30 else 3 if n <= 100 else 4
+            nrows = (n + ncols - 1) // ncols
+            padded = all_cols + [""] * (nrows * ncols - n)
+            col_width = max(len(c) for c in all_cols) + 3
+            for i in range(nrows):
+                row = ""
+                for j in range(ncols):
+                    row += padded[i + j * nrows].ljust(col_width)
+                print("  " + row.rstrip())
         if not args.color_by:
-            print("[INFO] Showing border-only view (use --color-by <column> to color by numeric values).")
+            print("[INFO] Showing border-only view (use --color-by <column> to color features).")
     else:
-        print("[INFO] Displaying boundaries only - no numeric columns detected")
-
+        print("[INFO] No attribute columns found.")
+    
     # Figure setup
     fig, ax = plt.subplots(figsize=(6, 6), dpi=150, facecolor="gray")
     ax.set_facecolor("gray")
@@ -765,7 +772,6 @@ def render_vector(path, args):
     # Determine colormap
     column = args.color_by if args.color_by in gdf.columns else None
 
-    # Warn if user provided an invalid column
     if args.color_by and args.color_by not in gdf.columns:
         print(f"[WARN] Column '{args.color_by}' not found. Showing border-only view.")
         column = None
@@ -776,44 +782,62 @@ def render_vector(path, args):
 
     cmap = colormaps.get(args.colormap) if args.colormap else None
 
-    # -----------------------------------------------------------------
     # Plot
-    # -----------------------------------------------------------------
     try:
-        if column and np.issubdtype(gdf[column].dtype, np.number):
-            vmin, vmax = np.percentile(gdf[column].dropna(), (2, 98))
-            print(f"[INFO] Coloring by '{column}' (range: {vmin:.2f}–{vmax:.2f})")
+        if column:
+            # NUMERIC COLUMN
+            if np.issubdtype(gdf[column].dtype, np.number):
+                vmin, vmax = np.percentile(gdf[column].dropna(), (2, 98))
+                print(f"[INFO] Coloring by numeric column '{column}' (range: {vmin:.2f}–{vmax:.2f})")
 
-            norm = mpl.colors.Normalize(vmin=vmin, vmax=vmax)
-            cmap = colormaps.get(args.colormap or "terrain")
+                norm = mpl.colors.Normalize(vmin=vmin, vmax=vmax)
+                cmap = colormaps.get(args.colormap or "terrain")
 
-            geom_type = gdf.geom_type.iloc[0]
+                geom_type = gdf.geom_type.iloc[0]
 
-            if geom_type.startswith("Line"):
-                # Lines — colored directly by value, no fill
-                for _, row in gdf.iterrows():
-                    val = row[column]
-                    color = cmap(norm(val))
-                    ax.plot(*row.geometry.xy, color=color, linewidth=getattr(args, "width", 0.7))
+                if geom_type.startswith("Line"):
+                    for _, row in gdf.iterrows():
+                        val = row[column]
+                        color = cmap(norm(val))
+                        ax.plot(*row.geometry.xy, color=color,
+                                linewidth=getattr(args, "width", 0.7))
+                else:
+                    gdf.plot(
+                        ax=ax,
+                        column=column,
+                        cmap=cmap,
+                        vmin=vmin,
+                        vmax=vmax,
+                        linewidth=0.2,
+                        edgecolor="white",
+                        zorder=1
+                    )
+
+            # CATEGORICAL COLUMN
             else:
-                # Polygons — color fill with thin white outlines (like viewgeom dark theme)
-                gdf.plot(
-                    ax=ax,
-                    column=column,
-                    cmap=cmap,
-                    vmin=vmin,
-                    vmax=vmax,
-                    linewidth=0.2,
-                    edgecolor="white",   # match viewgeom’s dark-theme outline
-                    zorder=1
-                )
+                categories = gdf[column].dropna().unique()
+                print(f"[INFO] Coloring by categorical column '{column}' ({len(categories)} classes)")
 
+                cmap = colormaps.get(args.colormap or "tab10")
+                colors = [cmap(i / max(1, len(categories) - 1))
+                        for i in range(len(categories))]
+
+                for cat, color in zip(categories, colors):
+                    subset = gdf[gdf[column] == cat]
+                    subset.plot(
+                        ax=ax,
+                        facecolor=color,
+                        edgecolor="white",
+                        linewidth=0.2,
+                        zorder=1
+                    )
+
+        # NO COLUMN → OUTLINE ONLY
         else:
-            # Default: outline-only mode (no fill)
             gdf.plot(
                 ax=ax,
                 facecolor="none",
-                edgecolor=args.edgecolor,  # default #F6FF00
+                edgecolor=args.edgecolor,
                 linewidth=getattr(args, "width", 0.7),
                 zorder=1
             )
@@ -822,9 +846,8 @@ def render_vector(path, args):
         print(f"[WARN] Plotting failed ({e}) — fallback to border-only.")
         gdf.plot(ax=ax, facecolor="none", edgecolor="gray", linewidth=0.5)
 
-
-    # Save to buffer (adaptive DPI)
-    render_dpi = 200 if "ITERM_SESSION_ID" in os.environ else 400
+    # Save to buffer
+    render_dpi = 400
     buf = BytesIO()
     fig.savefig(buf, format="png", dpi=render_dpi,
                 bbox_inches="tight", pad_inches=0.05,
@@ -832,9 +855,8 @@ def render_vector(path, args):
     plt.close(fig)
     buf.seek(0)
     img = np.array(Image.open(buf).convert("RGB"))
-    # print(f"[PROC] Rendered vector") # (DPI={render_dpi})
 
-    # --- Resize for terminal or manual override ---
+    # Resize for display
     if getattr(args, "display", None):
         scale = float(args.display)
         new_w = max(1, int(img.shape[1] * scale))
@@ -842,54 +864,14 @@ def render_vector(path, args):
         img = np.array(Image.fromarray(img).resize((new_w, new_h), Image.BILINEAR))
         print(f"[VIEW] Manual resize ×{scale:.2f} → {new_w}×{new_h}px")
     else:
-        # --- Resize for terminal or manual display ---
-        if args.display:
-            new_w, new_h = max(1, int(img.shape[1] * args.display)), max(1, int(img.shape[0] * args.display))
-            img = np.array(Image.fromarray(img).resize((new_w, new_h), Image.BILINEAR))
-            print(f"[VIEW] Manual resize ×{args.display:.2f} → {new_w}×{new_h}px")
-        else:
-            img, scale = resize_to_terminal(img)
-            print(f"[VIEW] Auto-fit display → {img.shape[1]}×{img.shape[0]}px (size={scale:.2f})")
+        img, scale = resize_to_terminal(img)
+        print(f"[VIEW] Rendered image size → {img.shape[1]}×{img.shape[0]}px (size={scale:.2f})")
 
-    show_inline_image(img, getattr(args, "display", None), is_vector=True)
+    # Use unified display
+    show_image_auto(img, getattr(args, "display", None), is_vector=True)
 
 # ---------------------------------------------------------------------
-# Smart display selector
-# ---------------------------------------------------------------------
-def show_image_auto(img: np.ndarray, args) -> None:
-    """Automatically pick best display method."""
-    if "ITERM_SESSION_ID" in os.environ:
-        try:
-            show_inline_image(img, getattr(args, "display", None))
-            # print("[OK] Inline render complete.")
-            return
-        except Exception:
-            print("[WARN] Inline display failed; trying ANSI fallback...")
-
-    if sys.stdout.isatty(): #and os.getenv("TERM"):
-        try:
-            w, h = (120, 60)
-            mode = "auto"
-            if getattr(args, "ansi_size", None):
-                try:
-                    w, h = map(int, args.ansi_size.lower().split("x"))
-                    mode = f"ansi-size {w}x{h}"
-                except Exception:
-                    pass
-            elif getattr(args, "display", None):
-                w = max(1, int(w * args.display))
-                h = max(1, int(h * args.display))
-                mode = f"display size {args.display:.2f}"
-            print(f"[VIEW] ANSI display → {w}×{h} grid ({mode})")
-            show_ansi_preview(img, width=w, height=h)
-            return
-        except Exception as e:
-            print(f"[WARN] ANSI preview failed ({e}); saving file...")
-
-    save_image_to_tmp(img)
-
-# ---------------------------------------------------------------------
-# Smart help formatter to hide None defaults
+# Smart help formatter
 # ---------------------------------------------------------------------
 import argparse
 
@@ -909,10 +891,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         prog="viewinline",
         description=(
-            "Quick-look geospatial viewer for iTerm2 and headless environments.\n\n"
+            "Quick-look geospatial viewer.\n\n"
             "Supports rasters (.tif, .tiff, .png, .jpg, .jpeg), "
             "vectors (.shp, .geojson, .gpkg), and CSV preview.\n"
-            "Displays inline in iTerm2 if available, otherwise as ANSI color preview."
+            "Sends iTerm2 inline image protocol — visible in compatible terminals."
         ),
         formatter_class=SmartDefaults
     )
@@ -927,10 +909,6 @@ def main() -> None:
     parser.add_argument(
         "--display", type=float, default=None,
         help="Resize only the displayed image (0.5=smaller, 2=bigger). Default: auto-fit to terminal."
-    )
-    parser.add_argument(
-        "--ansi-size", type=str, default=None,
-        help="ANSI fallback resolution. Try 180x90 or 200x100."
     )
 
     # Raster options
@@ -948,6 +926,18 @@ def main() -> None:
         help="Comma-separated band numbers for RGB display (e.g., '3,2,1'). Overrides default 1-3."
     )
     parser.add_argument(
+        "--vmin", type=float, default=None,
+        help="Minimum pixel value for raster display scaling."
+    )
+    parser.add_argument(
+        "--vmax", type=float, default=None,
+        help="Maximum pixel value for raster display scaling."
+    )
+    parser.add_argument(
+        "--nodata", type=float, default=None,
+        help="Override nodata value for rasters if dataset metadata is incorrect."
+    )
+    parser.add_argument(
     "--gallery", nargs="?", const="4x4", metavar="GRID",
     help="Display all PNG/JPG/TIF images in a folder as thumbnails (e.g., 5x5 grid)."
 )
@@ -955,13 +945,13 @@ def main() -> None:
     # CSV options
     parser.add_argument(
     "--hist",
-    nargs="?",            # <- makes the argument optional
-    const=True,           # <- allows `--hist` with no value
+    nargs="?",
+    const=True,
     help="Show histograms for all numeric columns or specify one column name."
-)
+    )
     parser.add_argument(
         "--describe",
-        nargs="?",            # <- same idea
+        nargs="?",
         const=True,
         help="Show summary statistics for all numeric columns or specify one column name."
     )
@@ -978,7 +968,39 @@ def main() -> None:
     metavar="COLUMN",
     help="Show unique values for a categorical column and exit"
     )
-
+    parser.add_argument(
+        "--where",
+        type=str,
+        default=None,
+        help="Filter rows using SQL WHERE clause (DuckDB required). Example: --where \"year > 2010\""
+    )
+    parser.add_argument(
+        "--sort",
+        type=str,
+        default=None,
+        help="Sort rows by values in the specified column, ascending by default (e.g. --sort population). Use --desc to reverse."
+    )
+    parser.add_argument(
+        "--desc",
+        action="store_true",
+        help="Sort in descending order."
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Limit number of rows shown (e.g. --limit 100)."
+    )
+    parser.add_argument(
+        "--select",
+        nargs="+",
+        help="Select specific columns (space separated) (e.g. --select Country City)"
+    )
+    parser.add_argument(
+        "--sql",
+        type=str,
+        help="Execute full DuckDB SQL query against CSV (advanced mode)."
+    )
 
     # Vector options
     parser.add_argument(
@@ -1002,7 +1024,7 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    # --- Basic argument sanity check ---
+    # Basic argument sanity check
     for bad in ("color-by", "edgecolor", "colormap", "band", "display"):
         for a in args.paths:
             if a == bad:
@@ -1011,22 +1033,8 @@ def main() -> None:
                 sys.exit(1)
 
     paths = args.paths
-    term_program = os.environ.get("TERM_PROGRAM", "").lower()
 
-    if "iterm" not in term_program:
-        print("[WARN] iTerm2 not detected. For better inline image display, use iTerm2 (mac).")
-        print("[INFO] Switching to ANSI/ASCII preview mode. This may not display correctly on all terminals.")
-        try:
-            ans = input("Continue with ANSI/ASCII preview? [y/N]: ").strip().lower()
-        except EOFError:
-            ans = "n"
-        if ans not in ("y", "yes"):
-            print("Cancelled by user.")
-            sys.exit(0)
-
-    # -----------------------------------------------------------------
     # File routing
-    # -----------------------------------------------------------------
     raster_exts = (".png", ".jpg", ".jpeg", ".tif", ".tiff")
     vector_exts = (".shp", ".geojson", ".json", ".gpkg")
 
@@ -1034,6 +1042,14 @@ def main() -> None:
         p = paths[0].lower()
 
         if p.endswith(raster_exts):
+            # For PNG/JPG, try PIL first (avoids rasterio geotransform warning)
+            # Fall back to rasterio for georeferenced files
+            if p.endswith(('.png', '.jpg', '.jpeg')):
+                try:
+                    render_simple_image(paths[0], args)
+                    return
+                except Exception:
+                    pass
             render_raster(paths, args)
             return
 
@@ -1042,75 +1058,170 @@ def main() -> None:
             return
 
         if os.path.isdir(paths[0]) and args.gallery:
-            render_gallery(paths[0], grid=args.gallery, args=args)
+            render_gallery(paths[0], grid=args.gallery, display_scale=args.display, is_vector=False)
             return
 
         elif p.endswith(".csv"):
+            # CSV handling (unchanged from original)
+            if args.sql and (args.where or args.sort or args.limit or args.select):
+                print("[ERROR] --sql cannot be combined with --where/--sort/--limit/--select.")
+                sys.exit(1)
 
-            # --- Handle CSV unique values ---
-            if args.unique:
-                import csv
+            try:
+                df = pd.read_csv(paths[0])
+            except Exception as e:
+                print(f"[ERROR] Failed to read CSV: {e}")
+                sys.exit(1)
 
-                col = args.unique
-                with open(paths[0], newline="", encoding="utf-8") as f:
-                    reader = csv.DictReader(f)
-                    if col not in reader.fieldnames:
-                        print(f"[ERROR] Column '{col}' not found in dataset.")
-                        sys.exit(1)
-                    unique_vals = set()
-                    for row in reader:
-                        val = row.get(col)
-                        if val not in (None, "", " "):
-                            unique_vals.add(val)
-                print(f"[DATA] CSV file: {os.path.basename(paths[0])}")
-                print(f"[DATA] Unique values in '{col}' ({len(unique_vals)}):")
+            if args.sql:
+                try:
+                    import duckdb
+                except ImportError:
+                    print("[ERROR] --sql requires DuckDB. Install with: pip install duckdb")
+                    sys.exit(1)
 
-                vals = sorted(unique_vals)
-                n = len(vals)
+                print("[INFO] Executing SQL query...")
 
-                # Auto-select number of columns
-                ncols = 1 if n <= 10 else (2 if n <= 30 else 3)
-                nrows = (n + ncols - 1) // ncols
+                try:
+                    query = args.sql.replace("data", f"read_csv_auto('{paths[0]}')")
+                    con = duckdb.connect()
+                    df = con.execute(query).df()
+                    con.close()
+                except Exception as e:
+                    print(f"[ERROR] DuckDB SQL failed: {e}")
+                    sys.exit(1)
 
-                # Pad values to fill grid evenly
-                vals += [""] * (nrows * ncols - n)
+                if df.empty:
+                    print("[WARN] Query returned no rows.")
+                    return
 
-                # Print in columns
-                col_width = max(len(str(v)) for v in vals if v) + 2
-                for i in range(nrows):
-                    row = "".join(str(vals[i + j * nrows]).ljust(col_width) for j in range(ncols))
-                    print("  " + row.strip())
-
-                sys.exit(0)  # this ensures no preview prompt follows
-
-            if args.scatter:
-                plot_scatter_csv(paths[0], args.scatter[0], args.scatter[1], args=args)
-                return
-
-            if args.describe or args.hist:
-                # --- Summary statistics ---
                 if args.describe:
                     if isinstance(args.describe, str):
-                        # describe specific column
-                        col = args.describe
-                        describe_csv(paths[0], column=col)
+                        describe_df(df, column=args.describe)
                     else:
-                        # describe all numeric columns
-                        describe_csv(paths[0])
+                        describe_df(df)
+                    return
 
-                # --- Histograms ---
                 if args.hist:
                     if isinstance(args.hist, str):
-                        # single column histogram
-                        inline_histogram_csv(paths[0], column=args.hist, bins=args.bins, args=args)
+                        inline_histogram_df(df, column=args.hist, bins=args.bins, 
+                                          display_scale=args.display, is_vector=False)
                     else:
-                        # all numeric columns
-                        inline_histogram_csv(paths[0], bins=args.bins, args=args)
+                        inline_histogram_df(df, bins=args.bins, 
+                                          display_scale=args.display, is_vector=False)
+                    return
 
-            else:
-                # Default behavior: show preview only
-                preview_csv(paths[0])
-                print("[INFO] Use --describe for summary or --hist for histograms.")
+                if args.scatter:
+                    plot_scatter_df(df, args.scatter[0], args.scatter[1], 
+                                  display_scale=args.display, is_vector=False)
+                    return
+
+                preview_df(df, max_rows=10, query_mode=True)
+                return
+
+            if args.where or args.sort or args.limit or args.select:
+                try:
+                    import duckdb
+                except ImportError:
+                    print("[ERROR] Filtering requires DuckDB. Install with: pip install duckdb")
+                    sys.exit(1)
+
+                print("[INFO] Building query...")
+
+                base_query = "SELECT * FROM df"
+
+                if args.select:
+                    selected = ", ".join(args.select)
+                    print(f"[INFO] Selecting columns: {selected}")
+                    base_query = f"SELECT {selected} FROM df"
+
+                clauses = []
+
+                if args.where:
+                    print(f"[INFO] Applying filter: {args.where}")
+                    clauses.append(f"WHERE {args.where}")
+
+                if args.sort:
+                    direction = "DESC" if args.desc else "ASC"
+                    print(f"[INFO] Sorting by: {args.sort} ({direction})")
+                    clauses.append(f"ORDER BY {args.sort} {direction}")
+
+                if args.limit:
+                    print(f"[INFO] Limiting rows: {args.limit}")
+                    clauses.append(f"LIMIT {args.limit}")
+
+                query = " ".join([base_query] + clauses)
+
+                try:
+                    df = duckdb.query(query).to_df()
+                except Exception as e:
+                    print(f"[ERROR] DuckDB query failed: {e}")
+                    sys.exit(1)
+
+                if df.empty:
+                    print("[WARN] Query returned no rows.")
+                    return
+
+            if args.unique:
+                col = args.unique
+
+                if col not in df.columns:
+                    print(f"[ERROR] Column '{col}' not found.")
+                    return
+
+                vals = sorted(df[col].dropna().astype(str).unique())
+                n = len(vals)
+
+                print(f"[DATA] Unique values in '{col}' ({n}):")
+
+                if n == 0:
+                    print("  (none)")
+                    return
+
+                if n <= 10:
+                    ncols = 1
+                elif n <= 30:
+                    ncols = 2
+                elif n <= 100:
+                    ncols = 3
+                else:
+                    ncols = 4
+
+                nrows = (n + ncols - 1) // ncols
+                vals += [""] * (nrows * ncols - n)
+                col_width = max(len(v) for v in vals) + 3
+
+                for i in range(nrows):
+                    row = ""
+                    for j in range(ncols):
+                        row += vals[i + j * nrows].ljust(col_width)
+                    print("  " + row.rstrip())
+
+                return
+
+            if args.describe:
+                if isinstance(args.describe, str):
+                    describe_df(df, column=args.describe)
+                else:
+                    describe_df(df)
+                return
+
+            if args.hist:
+                if isinstance(args.hist, str):
+                    inline_histogram_df(df, column=args.hist, bins=args.bins, 
+                                      display_scale=args.display, is_vector=False)
+                else:
+                    inline_histogram_df(df, bins=args.bins, 
+                                      display_scale=args.display, is_vector=False)
+                return
+
+            if args.scatter:
+                plot_scatter_df(df, args.scatter[0], args.scatter[1], 
+                              display_scale=args.display, is_vector=False)
+                return
+
+            preview_df(df, max_rows=args.limit or 10, query_mode=bool(args.where or args.sort or args.select))
+            return
 
         else:
             print("[ERROR] Unsupported file type.")

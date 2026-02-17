@@ -4,10 +4,10 @@ build-backend = "hatchling.build"
 
 [project]
 name = "viewinline"
-version = "0.1.5"
-description = "Quick look geospatial viewer for iTerm2 and ANSI compatible terminals"
+version = "0.2.0"
+description = "Quick look geospatial viewer for iTerm2 compatible terminals"
 readme = "README.md"
-license = { text = "MIT" }
+license = { text = "Apache-2.0" }
 authors = [
   { name = "Keiko Nomura" }
 ]
@@ -20,6 +20,9 @@ dependencies = [
   "matplotlib",
   "pyogrio"
 ]
+
+[project.optional-dependencies]
+sql = ["duckdb"]
 
 [project.scripts]
 viewinline = "viewinline.viewinline:main"
