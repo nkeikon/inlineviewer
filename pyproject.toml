@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "viewinline"
-version = "0.2.0"
+version = "0.2.1"
 description = "Quick look geospatial viewer for iTerm2 compatible terminals"
 readme = "README.md"
 license = { text = "Apache-2.0" }
@@ -12,17 +12,22 @@ authors = [
   { name = "Keiko Nomura" }
 ]
 requires-python = ">=3.9"
+
 dependencies = [
   "numpy",
   "pillow",
   "rasterio",
   "geopandas",
   "matplotlib",
-  "pyogrio"
+  "pyogrio",
+  "pandas"
 ]
 
 [project.optional-dependencies]
 sql = ["duckdb"]
+parquet = ["pyarrow"]
+hdf5 = ["h5py"]
+all = ["duckdb", "pyarrow", "h5py"]
 
 [project.scripts]
 viewinline = "viewinline.viewinline:main"

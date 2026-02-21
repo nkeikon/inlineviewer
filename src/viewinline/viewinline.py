@@ -3,14 +3,17 @@
 viewinline — quick-look geospatial viewer with inline image support.
 
 Supports:
-  • Rasters (.tif, .tiff, .png, .jpg, .jpeg)
-  • Vectors (.shp, .geojson, .gpkg)
+  • Rasters (.tif, .tiff, .png, .jpg, .jpeg, .nc, .hdf)
+  • Vectors (.shp, .geojson, .gpkg, .parquet, .geoparquet)
   • CSV (.csv) scatter plots and histograms
 
 Display:
   Sends iTerm2-style inline image escape sequences. Works in terminals that support
   the iTerm2 inline image protocol (iTerm2, WezTerm, Konsole, etc.). In other
-  terminals, the escape codes are harmlessly ignored.
+  terminals, the escape codes are ignored.
+  
+  Particularly useful on HPC systems and remote servers accessed via SSH — images
+  render on your local terminal without X11 forwarding, VNC, or file downloads.
   
   No detection, no fallbacks. If images are not shown, it means that the terminal 
   is not compatible.
@@ -29,7 +32,7 @@ import warnings
 warnings.filterwarnings("ignore", message="More than one layer found", category=UserWarning)
 warnings.filterwarnings("ignore", message="Dataset has no geotransform", category=UserWarning)
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 AVAILABLE_COLORMAPS = [
     "viridis", "inferno", "magma", "plasma",
@@ -40,7 +43,7 @@ AVAILABLE_COLORMAPS = [
 # ---------------------------------------------------------------------
 # Display utilities
 # ---------------------------------------------------------------------
-def show_inline_image(image_array: np.ndarray, display_scale: float | None = None, is_vector: bool = False) -> None:
+def show_inline_image(image_array: np.ndarray, display_scale = None, is_vector: bool = False) -> None:
     """Encode image and write iTerm2 inline escape sequence to stdout.
 
     Raises only if image encoding fails. Cannot detect whether the terminal
@@ -68,7 +71,7 @@ def show_inline_image(image_array: np.ndarray, display_scale: float | None = Non
     sys.stdout.flush()
 
 
-def show_image_auto(img: np.ndarray, display_scale: float | None = None, is_vector: bool = False) -> None:
+def show_image_auto(img: np.ndarray, display_scale = None, is_vector: bool = False) -> None:
     """Attempt inline image display. No fallbacks, no detection.
     
     Just sends the iTerm2 inline image escape sequence. If the terminal supports it,
@@ -179,7 +182,6 @@ def preview_df(df, max_rows: int = 10, query_mode: bool = False, filename: str =
 # Describe
 # =============================================================
 def describe_df(df, column=None):
-
     if df is None or df.empty:
         print("[WARN] No data rows found.")
         return
@@ -497,7 +499,6 @@ def render_simple_image(filepath: str, args) -> None:
     except Exception as e:
         print(f"[ERROR] Failed to load image: {e}")
 
-
 def render_raster(paths: list[str], args) -> None:
     try:
         import rasterio
@@ -507,14 +508,72 @@ def render_raster(paths: list[str], args) -> None:
         return
 
     try:
-        if len(paths) == 1:
 
-            with rasterio.open(paths[0]) as ds:
+        if len(paths) == 1:
+            path = paths[0]
+            
+            # Handle NetCDF/HDF with subdatasets
+            if path.lower().endswith(('.nc', '.hdf', '.hdf5', '.h5')):
+                try:
+                    with rasterio.open(path) as src:
+                        subdatasets = src.subdatasets
+                    
+                    # If there are subdatasets, require --subset to select one
+                    if subdatasets:
+                        if not args.subset:
+                            file_type = "variables" if path.lower().endswith('.nc') else "datasets"
+                            print(f"Found {len(subdatasets)} {file_type} in {os.path.basename(path)}:")
+                            for i, sub in enumerate(subdatasets, 1):
+                                # Extract dataset/variable name from GDAL subdataset string
+                                ds_name = sub.split(':')[-1].lstrip('/')
+                                print(f"  [{i}] {ds_name}")
+                            print(f"\nUse --subset <N> to display a specific {file_type[:-1]}.")
+                            return
+                        
+                        # Select by index
+                        if args.subset < 1 or args.subset > len(subdatasets):
+                            print(f"[ERROR] --subset must be between 1 and {len(subdatasets)}")
+                            return
+                        
+                        path = subdatasets[args.subset - 1]
+                        var_name = path.split(':')[-1]
+                        print(f"[INFO] Displaying variable {args.subset}: {var_name}")
+                
+                except rasterio.errors.RasterioIOError as e:
+                    # GDAL lacks support, try h5py fallback for HDF5
+                    if path.lower().endswith(('.hdf5', '.h5')):
+                        try:
+                            import h5py
+                        except ImportError:
+                            print("[ERROR] HDF5 file cannot be opened.")
+                            print("[INFO] Requires either:")
+                            print("        - GDAL with HDF5 support, or")
+                            print("        - h5py: pip install h5py")
+                            return
+                        
+                        # print("[ERROR] h5py fallback not yet implemented.")
+                        print("[INFO] Install GDAL with HDF5")
+                        return
+                    
+                    elif path.lower().endswith('.hdf'):
+                        print(f"[ERROR] Cannot open HDF4 file: {e}")
+                        print("[INFO] HDF4 requires GDAL with HDF4 support")
+                        return
+                    else:
+                        # NetCDF error
+                        print(f"[ERROR] Cannot open NetCDF file: {e}")
+                        return
+
+            # Continue with normal raster opening
+            with rasterio.open(path) as ds:
                 H, W = ds.height, ds.width
                 print(f"[DATA] Raster loaded: {os.path.basename(paths[0])} ({W}×{H})")
-
                 band_count = ds.count
-
+                
+                # Auto-detect nodata from file metadata
+                if args.nodata is None and ds.nodata is not None:
+                    args.nodata = ds.nodata
+                
                 # Downsample for performance
                 max_dim = 2000
 
@@ -532,19 +591,25 @@ def render_raster(paths: list[str], args) -> None:
                 else:
                     data = ds.read()
 
-            # MULTI BAND
-            if band_count >= 3:
+            # Print band/slice count for all multi-band files
+            if band_count > 1:
+                if paths[0].lower().endswith('.nc'):
+                    print(f"[INFO] {band_count} slices detected")
+                else:
+                    print(f"[INFO] Multi-band raster detected ({band_count} bands)")
 
-                print(f"[INFO] Multi-band raster detected ({band_count} bands)")
+            # MULTI BAND RGB (skip for NetCDF - treat as slices/timesteps, not RGB)
+            if band_count >= 3 and not paths[0].lower().endswith('.nc'):
 
-                if getattr(args, "rgb_bands", None):
+
+                if getattr(args, "rgb", None):
                     try:
-                        rgb_idx = [int(b) - 1 for b in args.rgb_bands.split(",")]
+                        rgb_idx = [b - 1 for b in args.rgb]
                         if len(rgb_idx) != 3:
                             raise ValueError
-                        print(f"[INFO] Using RGB bands: {args.rgb_bands}")
+                        print(f"[INFO] Using RGB bands: {args.rgb}")
                     except Exception:
-                        print("[WARN] Invalid --rgb-bands. Using default 1,2,3")
+                        print("[WARN] Invalid --rgb. Using default 1 2 3")
                         rgb_idx = [0, 1, 2]
                 else:
                     rgb_idx = [0, 1, 2]
@@ -565,6 +630,7 @@ def render_raster(paths: list[str], args) -> None:
             else:
 
                 band_idx = max(0, min(args.band - 1, band_count - 1))
+                # print(f"[INFO] Displaying band {band_idx + 1} of {band_count}")
                 raw_band = data[band_idx].astype(float)
 
                 # mask nodata
@@ -576,7 +642,14 @@ def render_raster(paths: list[str], args) -> None:
                 if np.any(np.isfinite(raw_band)):
                     min_val = np.nanmin(raw_band)
                     max_val = np.nanmax(raw_band)
-                    print(f"[DATA] Value range (preview): {min_val:.3f} → {max_val:.3f}")
+
+                    if paths[0].lower().endswith('.nc'):
+                        print(f"[DATA] Slice {band_idx + 1} of {band_count} — value range: {min_val:.3f} → {max_val:.3f}")
+                        if band_count > 1:
+                            print(f"[INFO] Use --band <N> to display a different slice")
+                    else:
+                        print(f"[DATA] Band {band_idx + 1} of {band_count} — value range: {min_val:.3f} → {max_val:.3f}")
+                                        
                 else:
                     print("[WARN] No valid pixels found.")
 
@@ -629,7 +702,12 @@ def render_raster(paths: list[str], args) -> None:
         show_image_auto(img, getattr(args, "display", None), is_vector=False)
 
     except Exception as e:
-        print(f"[ERROR] Raster rendering failed: {e}")
+        if paths[0].lower().endswith('.nc'):
+            print(f"[ERROR] Cannot display this variable.")
+            print("[INFO] viewinline only supports 2D or 3D NetCDF variables")
+        else:
+            print(f"[ERROR] Raster rendering failed: {e}")
+
 
 def render_gallery(folder: str, grid: str = "4x4", display_scale=None, is_vector=False) -> None:
     """Render a folder of rasters/images as small thumbnails in a grid."""
@@ -733,37 +811,51 @@ def render_vector(path, args):
     except Exception as e:
         print(f"[WARN] Could not list layers: {e}")
 
+    # try:
+    #     gdf = gpd.read_file(path, layer=getattr(args, "layer", None))
+    #     print(f"[DATA] Vector loaded: {os.path.basename(path)} ({len(gdf)} features)")
+    # except Exception as e:
+    #     print(f"[ERROR] Failed to read vector: {e}")
+    #     return
+
     try:
-        gdf = gpd.read_file(path, layer=getattr(args, "layer", None))
+        # Use read_parquet for parquet/geoparquet files
+        if path.lower().endswith(('.parquet', '.geoparquet')):
+            gdf = gpd.read_parquet(path)
+        else:
+            gdf = gpd.read_file(path, layer=getattr(args, "layer", None))
         print(f"[DATA] Vector loaded: {os.path.basename(path)} ({len(gdf)} features)")
+    except ImportError:
+        print("[ERROR] Parquet/GeoParquet support requires pyarrow. Install with: pip install pyarrow")
+        return
     except Exception as e:
         print(f"[ERROR] Failed to read vector: {e}")
         return
-
+        
     # Detect non-geometry columns
     all_cols = [c for c in gdf.columns if c != gdf.geometry.name]
 
     if all_cols:
         n = len(all_cols)
-        print(f"[INFO] Available columns ({n}):")
-        if n <= 20:
-            for c in all_cols:
-                print(f"  {c}")
-        else:
-            ncols = 2 if n <= 30 else 3 if n <= 100 else 4
-            nrows = (n + ncols - 1) // ncols
-            padded = all_cols + [""] * (nrows * ncols - n)
-            col_width = max(len(c) for c in all_cols) + 3
-            for i in range(nrows):
-                row = ""
-                for j in range(ncols):
-                    row += padded[i + j * nrows].ljust(col_width)
-                print("  " + row.rstrip())
-        if not args.color_by:
+        if not args.color_by:  # Only show columns if user didn't specify one
+            print(f"[INFO] Available columns ({n}):")
+            if n <= 20:
+                for c in all_cols:
+                    print(f"  {c}")
+            else:
+                ncols = 2 if n <= 30 else 3 if n <= 100 else 4
+                nrows = (n + ncols - 1) // ncols
+                padded = all_cols + [""] * (nrows * ncols - n)
+                col_width = max(len(c) for c in all_cols) + 3
+                for i in range(nrows):
+                    row = ""
+                    for j in range(ncols):
+                        row += padded[i + j * nrows].ljust(col_width)
+                    print("  " + row.rstrip())
             print("[INFO] Showing border-only view (use --color-by <column> to color features).")
     else:
         print("[INFO] No attribute columns found.")
-    
+        
     # Figure setup
     fig, ax = plt.subplots(figsize=(6, 6), dpi=150, facecolor="gray")
     ax.set_facecolor("gray")
@@ -808,8 +900,10 @@ def render_vector(path, args):
                         cmap=cmap,
                         vmin=vmin,
                         vmax=vmax,
-                        linewidth=0.2,
-                        edgecolor="white",
+                        linewidth=0,
+                        edgecolor="none",
+                        # linewidth=getattr(args, "width", 0.2),
+                        # edgecolor=args.edgecolor,
                         zorder=1
                     )
 
@@ -827,8 +921,10 @@ def render_vector(path, args):
                     subset.plot(
                         ax=ax,
                         facecolor=color,
-                        edgecolor="white",
-                        linewidth=0.2,
+                        linewidth=0,
+                        edgecolor="none",                       
+                        # edgecolor=args.edgecolor,
+                        # linewidth=getattr(args, "width", 0.2),
                         zorder=1
                     )
 
@@ -887,6 +983,157 @@ class SmartDefaults(argparse.ArgumentDefaultsHelpFormatter):
 # ---------------------------------------------------------------------
 # Dispatcher
 # ---------------------------------------------------------------------
+def handle_tabular_data(df: pd.DataFrame, args, filepath: str) -> None:
+    """Handle CSV/parquet/vector-as-table with all tabular operations."""
+    if args.sql and (args.where or args.sort or args.limit or args.select):
+        print("[ERROR] --sql cannot be combined with --where/--sort/--limit/--select.")
+        sys.exit(1)
+
+    if args.sql:
+        try:
+            import duckdb
+        except ImportError:
+            print("[ERROR] --sql requires DuckDB. Install with: pip install duckdb")
+            sys.exit(1)
+
+        print("[INFO] Executing SQL query...")
+
+        try:
+            query = args.sql.replace("data", f"read_csv_auto('{filepath}')")
+            con = duckdb.connect()
+            df = con.execute(query).df()
+            con.close()
+        except Exception as e:
+            print(f"[ERROR] DuckDB SQL failed: {e}")
+            sys.exit(1)
+
+        if df.empty:
+            print("[WARN] Query returned no rows.")
+            return
+
+        if args.describe:
+            if isinstance(args.describe, str):
+                describe_df(df, column=args.describe)
+            else:
+                describe_df(df)
+            return
+
+        if args.hist:
+            if isinstance(args.hist, str):
+                inline_histogram_df(df, column=args.hist, bins=args.bins, 
+                                  display_scale=args.display, is_vector=False)
+            else:
+                inline_histogram_df(df, bins=args.bins, 
+                                  display_scale=args.display, is_vector=False)
+            return
+
+        if args.scatter:
+            plot_scatter_df(df, args.scatter[0], args.scatter[1], 
+                          display_scale=args.display, is_vector=False)
+            return
+
+        preview_df(df, max_rows=10, query_mode=True)
+        return
+
+    if args.where or args.sort or args.limit or args.select:
+        try:
+            import duckdb
+        except ImportError:
+            print("[ERROR] Filtering requires DuckDB. Install with: pip install duckdb")
+            sys.exit(1)
+
+        print("[INFO] Building query...")
+
+        base_query = "SELECT * FROM df"
+
+        if args.select:
+            selected = ", ".join(args.select)
+            print(f"[INFO] Selecting columns: {selected}")
+            base_query = f"SELECT {selected} FROM df"
+
+        clauses = []
+
+        if args.where:
+            print(f"[INFO] Applying filter: {args.where}")
+            clauses.append(f"WHERE {args.where}")
+
+        if args.sort:
+            direction = "DESC" if args.desc else "ASC"
+            print(f"[INFO] Sorting by: {args.sort} ({direction})")
+            clauses.append(f"ORDER BY {args.sort} {direction}")
+
+        if args.limit:
+            print(f"[INFO] Limiting rows: {args.limit}")
+            clauses.append(f"LIMIT {args.limit}")
+
+        query = " ".join([base_query] + clauses)
+
+        try:
+            df = duckdb.query(query).to_df()
+        except Exception as e:
+            print(f"[ERROR] DuckDB query failed: {e}")
+            sys.exit(1)
+
+        if df.empty:
+            print("[WARN] Query returned no rows.")
+            return
+
+    if args.unique:
+        col = args.unique
+
+        if col not in df.columns:
+            print(f"[ERROR] Column '{col}' not found.")
+            return
+
+        vals = sorted(df[col].dropna().astype(str).unique())
+        n = len(vals)
+
+        print(f"[DATA] Unique values in '{col}' ({n}):")
+
+        if n == 0:
+            print("  (none)")
+            return
+
+        if n <= 10:
+            for v in vals:
+                print(f"  {v}")
+        else:
+            ncols = 2 if n <= 30 else 3 if n <= 100 else 4
+            nrows = (n + ncols - 1) // ncols
+            vals += [""] * (nrows * ncols - n)
+            col_width = max(len(v) for v in vals) + 3
+
+            for i in range(nrows):
+                row = ""
+                for j in range(ncols):
+                    row += vals[i + j * nrows].ljust(col_width)
+                print("  " + row.rstrip())
+
+            return
+    
+    if args.describe:
+        if isinstance(args.describe, str):
+            describe_df(df, column=args.describe)
+        else:
+            describe_df(df)
+        return
+
+    if args.hist:
+        if isinstance(args.hist, str):
+            inline_histogram_df(df, column=args.hist, bins=args.bins, 
+                              display_scale=args.display, is_vector=False)
+        else:
+            inline_histogram_df(df, bins=args.bins, 
+                              display_scale=args.display, is_vector=False)
+        return
+
+    if args.scatter:
+        plot_scatter_df(df, args.scatter[0], args.scatter[1], 
+                      display_scale=args.display, is_vector=False)
+        return
+
+    preview_df(df, max_rows=args.limit or 10, query_mode=bool(args.where or args.sort or args.select))
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="viewinline",
@@ -901,10 +1148,9 @@ def main() -> None:
 
     # File input
     parser.add_argument(
-        "paths", nargs="+",
+        "paths", nargs="*",  # Zero or more (optional)
         help="Path to raster(s), vector, or CSV file. Provide 1 file or exactly 3 rasters for RGB (R G B)."
     )
-
     # Display options
     parser.add_argument(
         "--display", type=float, default=None,
@@ -914,7 +1160,11 @@ def main() -> None:
     # Raster options
     parser.add_argument(
         "--band", type=int, default=1,
-        help="Band number to display (single raster case)."
+        help="Band number to display (single raster case), or slice number for NetCDF."
+    )
+    parser.add_argument(
+        "--timestep", type=int, default=None,
+        help="Alias for --band when working with NetCDF files (1-based index)."
     )
     parser.add_argument(
         "--colormap", nargs="?", const="terrain",
@@ -922,8 +1172,8 @@ def main() -> None:
         help="Apply colormap to single-band rasters or vector coloring. Flag without value → 'terrain'."
     )
     parser.add_argument(
-        "--rgb-bands", type=str, default=None,
-        help="Comma-separated band numbers for RGB display (e.g., '3,2,1'). Overrides default 1-3."
+        "--rgb", nargs=3, type=int, metavar=('R', 'G', 'B'), default=None,
+        help="Three band numbers for RGB display (e.g., --rgb 4 3 2). Overrides default 1 2 3."
     )
     parser.add_argument(
         "--vmin", type=float, default=None,
@@ -935,12 +1185,20 @@ def main() -> None:
     )
     parser.add_argument(
         "--nodata", type=float, default=None,
-        help="Override nodata value for rasters if dataset metadata is incorrect."
+        help="Override nodata value for rasters if dataset metadata is missing or incorrect."
     )
     parser.add_argument(
     "--gallery", nargs="?", const="4x4", metavar="GRID",
     help="Display all PNG/JPG/TIF images in a folder as thumbnails (e.g., 5x5 grid)."
 )
+    parser.add_argument(
+        "--subset", type=int, default=None,
+        help="Variable index for NetCDF files (e.g. --subset 1)."
+    )
+    parser.add_argument(
+        "--rgbfiles", nargs=3, type=str, metavar=('R', 'G', 'B'),
+        help="Three single-band rasters for RGB composite (e.g., --rgbfiles R.tif G.tif B.tif). Can also provide as positional arguments without the flag."
+    )
 
     # CSV options
     parser.add_argument(
@@ -1017,13 +1275,30 @@ def main() -> None:
     )
     parser.add_argument(
         "--layer", type=str, default=None,
-        help="Layer name for GeoPackage or multi-layer files."
+        # help="Layer name for GeoPackage or multi-layer files."
+        help="Layer name for GeoPackage/multi-layer files, or variable name for NetCDF files."
     )
+    parser.add_argument(
+    "--table", action="store_true",
+    help="Display vector/parquet file as tabular data instead of rendering geometry."
+)
 
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
 
     args = parser.parse_args()
 
+    # Handle --rgbfiles flag (takes precedence)
+    if args.rgbfiles:
+        args.paths = args.rgbfiles
+
+    # Handle aliases
+    if args.timestep is not None:
+        args.band = args.timestep
+
+    # Validate input
+    if not args.paths:
+        parser.error("No input file(s) provided")
+    
     # Basic argument sanity check
     for bad in ("color-by", "edgecolor", "colormap", "band", "display"):
         for a in args.paths:
@@ -1035,8 +1310,8 @@ def main() -> None:
     paths = args.paths
 
     # File routing
-    raster_exts = (".png", ".jpg", ".jpeg", ".tif", ".tiff")
-    vector_exts = (".shp", ".geojson", ".json", ".gpkg")
+    raster_exts = (".png", ".jpg", ".jpeg", ".tif", ".tiff", ".nc", ".hdf", ".hdf5", ".h5")
+    vector_exts = (".shp", ".geojson", ".json", ".gpkg", ".parquet", "geoparquet")
 
     if len(paths) == 1:
         p = paths[0].lower()
@@ -1054,173 +1329,54 @@ def main() -> None:
             return
 
         elif p.endswith(vector_exts):
-            render_vector(paths[0], args)
-            return
+            if args.table:
+                # Treat as tabular data
+                try:
+                    if p.endswith(('.parquet', '.geoparquet')):
+                        df = pd.read_parquet(paths[0])
+                    else:
+                        import geopandas as gpd
+                        gdf = gpd.read_file(paths[0])
+                        df = pd.DataFrame(gdf.drop(columns='geometry'))
+                    handle_tabular_data(df, args, paths[0])
+                    return
+                except Exception as e:
+                    print(f"[ERROR] Failed to read file: {e}")
+                    sys.exit(1)
+            else:
+                render_vector(paths[0], args)
+                return
 
         if os.path.isdir(paths[0]) and args.gallery:
             render_gallery(paths[0], grid=args.gallery, display_scale=args.display, is_vector=False)
             return
 
-        elif p.endswith(".csv"):
-            # CSV handling (unchanged from original)
-            if args.sql and (args.where or args.sort or args.limit or args.select):
-                print("[ERROR] --sql cannot be combined with --where/--sort/--limit/--select.")
-                sys.exit(1)
-
+        elif p.endswith((".csv", ".parquet")):
+            # Try geoparquet first if it's a parquet file
+            if p.endswith(".parquet"):
+                try:
+                    import geopandas as gpd
+                    gdf = gpd.read_parquet(paths[0])
+                    if hasattr(gdf, 'geometry') and gdf.geometry is not None:
+                        render_vector(paths[0], args)
+                        return
+                except Exception:
+                    pass
+            
+            # Read as tabular data
             try:
-                df = pd.read_csv(paths[0])
-            except Exception as e:
-                print(f"[ERROR] Failed to read CSV: {e}")
+                if p.endswith(".parquet"):
+                    df = pd.read_parquet(paths[0])
+                else:
+                    df = pd.read_csv(paths[0])
+            except ImportError:
+                print("[ERROR] Parquet support requires pyarrow. Install with: pip install pyarrow")
                 sys.exit(1)
-
-            if args.sql:
-                try:
-                    import duckdb
-                except ImportError:
-                    print("[ERROR] --sql requires DuckDB. Install with: pip install duckdb")
-                    sys.exit(1)
-
-                print("[INFO] Executing SQL query...")
-
-                try:
-                    query = args.sql.replace("data", f"read_csv_auto('{paths[0]}')")
-                    con = duckdb.connect()
-                    df = con.execute(query).df()
-                    con.close()
-                except Exception as e:
-                    print(f"[ERROR] DuckDB SQL failed: {e}")
-                    sys.exit(1)
-
-                if df.empty:
-                    print("[WARN] Query returned no rows.")
-                    return
-
-                if args.describe:
-                    if isinstance(args.describe, str):
-                        describe_df(df, column=args.describe)
-                    else:
-                        describe_df(df)
-                    return
-
-                if args.hist:
-                    if isinstance(args.hist, str):
-                        inline_histogram_df(df, column=args.hist, bins=args.bins, 
-                                          display_scale=args.display, is_vector=False)
-                    else:
-                        inline_histogram_df(df, bins=args.bins, 
-                                          display_scale=args.display, is_vector=False)
-                    return
-
-                if args.scatter:
-                    plot_scatter_df(df, args.scatter[0], args.scatter[1], 
-                                  display_scale=args.display, is_vector=False)
-                    return
-
-                preview_df(df, max_rows=10, query_mode=True)
-                return
-
-            if args.where or args.sort or args.limit or args.select:
-                try:
-                    import duckdb
-                except ImportError:
-                    print("[ERROR] Filtering requires DuckDB. Install with: pip install duckdb")
-                    sys.exit(1)
-
-                print("[INFO] Building query...")
-
-                base_query = "SELECT * FROM df"
-
-                if args.select:
-                    selected = ", ".join(args.select)
-                    print(f"[INFO] Selecting columns: {selected}")
-                    base_query = f"SELECT {selected} FROM df"
-
-                clauses = []
-
-                if args.where:
-                    print(f"[INFO] Applying filter: {args.where}")
-                    clauses.append(f"WHERE {args.where}")
-
-                if args.sort:
-                    direction = "DESC" if args.desc else "ASC"
-                    print(f"[INFO] Sorting by: {args.sort} ({direction})")
-                    clauses.append(f"ORDER BY {args.sort} {direction}")
-
-                if args.limit:
-                    print(f"[INFO] Limiting rows: {args.limit}")
-                    clauses.append(f"LIMIT {args.limit}")
-
-                query = " ".join([base_query] + clauses)
-
-                try:
-                    df = duckdb.query(query).to_df()
-                except Exception as e:
-                    print(f"[ERROR] DuckDB query failed: {e}")
-                    sys.exit(1)
-
-                if df.empty:
-                    print("[WARN] Query returned no rows.")
-                    return
-
-            if args.unique:
-                col = args.unique
-
-                if col not in df.columns:
-                    print(f"[ERROR] Column '{col}' not found.")
-                    return
-
-                vals = sorted(df[col].dropna().astype(str).unique())
-                n = len(vals)
-
-                print(f"[DATA] Unique values in '{col}' ({n}):")
-
-                if n == 0:
-                    print("  (none)")
-                    return
-
-                if n <= 10:
-                    ncols = 1
-                elif n <= 30:
-                    ncols = 2
-                elif n <= 100:
-                    ncols = 3
-                else:
-                    ncols = 4
-
-                nrows = (n + ncols - 1) // ncols
-                vals += [""] * (nrows * ncols - n)
-                col_width = max(len(v) for v in vals) + 3
-
-                for i in range(nrows):
-                    row = ""
-                    for j in range(ncols):
-                        row += vals[i + j * nrows].ljust(col_width)
-                    print("  " + row.rstrip())
-
-                return
-
-            if args.describe:
-                if isinstance(args.describe, str):
-                    describe_df(df, column=args.describe)
-                else:
-                    describe_df(df)
-                return
-
-            if args.hist:
-                if isinstance(args.hist, str):
-                    inline_histogram_df(df, column=args.hist, bins=args.bins, 
-                                      display_scale=args.display, is_vector=False)
-                else:
-                    inline_histogram_df(df, bins=args.bins, 
-                                      display_scale=args.display, is_vector=False)
-                return
-
-            if args.scatter:
-                plot_scatter_df(df, args.scatter[0], args.scatter[1], 
-                              display_scale=args.display, is_vector=False)
-                return
-
-            preview_df(df, max_rows=args.limit or 10, query_mode=bool(args.where or args.sort or args.select))
+            except Exception as e:
+                print(f"[ERROR] Failed to read file: {e}")
+                sys.exit(1)
+            
+            handle_tabular_data(df, args, paths[0])
             return
 
         else:
