@@ -6,6 +6,11 @@
 **Quick-look geospatial viewer for compatible terminals.**  
 Displays rasters, vectors, and tabular data directly in the terminal with no GUI and no temporary files.
 
+<p align="center">
+  <a href="viewinline_gif1.gif"><img src="viewinline_gif1.gif" width="49%"></a>
+  <a href="viewinline_gif2.gif"><img src="viewinline_gif2.gif" width="49%"></a>
+</p>
+
 Think of it as `ls` for geospatial files — designed for quick visual inspection at the command line, not a replacement for QGIS, ArcGIS, or analytical workflows.
 
 Particularly useful on HPC systems and remote servers accessed via SSH. Images render on your local terminal without X11 forwarding, VNC, or file downloads.
