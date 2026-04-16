@@ -26,6 +26,7 @@ import pandas as pd
 from PIL import Image, ImageOps, ImageDraw, ImageFont
 from matplotlib import colormaps
 import matplotlib as mpl
+import subprocess
 
 import warnings
 
@@ -40,6 +41,71 @@ AVAILABLE_COLORMAPS = [
     "Spectral", "cubehelix", "tab10", "turbo"
 ]
 
+_TERMINALS_WITHOUT_IMAGES = [
+    'unknown', 'cygwin', 'tmux', 'screen',
+    'vscode', 'xterm', 'rxvt', 'alacritty', 'foot', 'st', 'kitty',
+    'gnome-terminal', 'xfce4-terminal', 'lxterminal', 'terminator',
+    'tilix', 'hyper', 'windows terminal', 'putty', 'sakura',
+    'terminology', 'eterm', 'guake', 'tilda', 'deepin-terminal',
+]
+
+def detect_terminal() -> dict[str, str]:
+    """Detect terminal emulator by checking environment variables and parent process.
+    Returns a dictionary of detected terminal-related variables.
+    """
+    env = os.environ
+    terms = {}
+    # Check for common terminal-specific variables
+    for var in [
+        "TERM_PROGRAM", "KONSOLE_VERSION", "KONSOLE_PROFILE_NAME",
+        "VTE_VERSION", "TERMINATOR_UUID", "ALACRITTY_SOCKET",
+        "WEZTERM_EXECUTABLE", "ITERM_SESSION_ID"
+    ]:
+        if var in env:
+            term = env[var]
+            if term:
+                terms[var] = term
+    # Fallback: check parent process
+    if not terms:
+        try:
+            ppid = os.getppid()
+            parent = subprocess.check_output(["ps", "-p", str(ppid), "-o", "comm="]).decode().strip()
+            if parent:
+                terms["PARENT_PROCESS"] = parent
+        except Exception:
+            pass
+    term = env.get("TERM")
+    if term:
+        terms["TERM"] = term
+    return terms
+
+def is_terminal_without_images(term_info: dict[str, str]) -> bool:
+    """Determine if the terminal is likely to support inline images based on detected info.
+    Args:
+        term_info: Dictionary of terminal-related environment variables.
+    Returns:
+        True if terminal is likely supported, False if known to be unsupported.
+    """
+    if os.environ.get("INLINE_VIEWER_ENGINE") == "chafa":
+        return False
+    terms = term_info.values()
+    for unsupported in _TERMINALS_WITHOUT_IMAGES:
+        if unsupported in terms:
+            return False
+    return True
+
+def is_chafa_available() -> bool:
+    """Check if the 'chafa' command-line tool is available for ASCII art fallback."""
+    try:
+        subprocess.run(["chafa", "--version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
+    except FileNotFoundError:
+        return False
+
+_TERMINAL_INFO = detect_terminal()
+_TERMINAL_SUPPORTS_IMAGES = not is_terminal_without_images(_TERMINAL_INFO)
+_IS_CHAFA_AVAILABLE = is_chafa_available()
+
 # ---------------------------------------------------------------------
 # Display utilities
 # ---------------------------------------------------------------------
@@ -52,7 +118,8 @@ def show_inline_image(image_array: np.ndarray, display_scale = None, is_vector: 
     buffer = BytesIO()
     # Use lower compression level for performance in speed
     Image.fromarray(image_array).save(buffer, format="PNG", compress_level=1, optimize=False)
-    encoded = base64.b64encode(buffer.getvalue()).decode("utf-8")
+    image_bytes = buffer.getvalue()
+    encoded = base64.b64encode(image_bytes).decode("utf-8")
 
     if display_scale is None:
         width_pct = 33  # same default for both
@@ -67,7 +134,18 @@ def show_inline_image(image_array: np.ndarray, display_scale = None, is_vector: 
     # Clamp range
     width_pct = max(5, min(width_pct, 400))
 
-    sys.stdout.write(f"\033]1337;File=inline=1;width={width_pct}%:{encoded}\a\n")
+    if _TERMINAL_SUPPORTS_IMAGES:
+        sys.stdout.write(f"\033]1337;File=inline=1;width={width_pct}%:{encoded}\a\n")
+    else:
+        if _IS_CHAFA_AVAILABLE:
+            chafa_output = subprocess.check_output(
+                ["chafa", "-"],  
+                input=image_bytes
+            ).decode()
+            sys.stdout.write(f"\n{chafa_output}\a\n")
+        else:
+            sys.stdout.write(f"[INFO] Use supported terminal or install 'chafa' for ascii art fallback. Detected: {_TERMINAL_INFO}\n")
+    
     sys.stdout.flush()
 
 

@@ -76,6 +76,8 @@ The iTerm2 inline image protocol (OSC 1337) is supported by:
 
 **tmux/screen:** Inline images don't work inside tmux or screen sessions, even with `allow-passthrough on`. Use a plain terminal tab.
 
+**Fallback:** In terminals that do not support inline images, you can fallback to ASCII art by installing [`chafa`](https://hpjansson.org/chafa/) command-line tool. Install `chafa` with your package manager (e.g. `brew install chafa` or `sudo apt install chafa`). You can also force the use of `chafa` by setting the environment variable `INLINE_VIEWER_ENGINE=chafa`.
+
 ## Features  
 - Previews rasters, vectors, and tabular data directly in the terminal  
 - Non-interactive: everything is controlled through command-line options
