@@ -87,12 +87,12 @@ def is_terminal_without_images(term_info: dict[str, str]) -> bool:
         True if terminal is likely supported, False if known to be unsupported.
     """
     if os.environ.get("INLINE_VIEWER_ENGINE") == "chafa":
-        return False
+        return True
     terms = term_info.values()
     for unsupported in _TERMINALS_WITHOUT_IMAGES:
         if unsupported in terms:
-            return False
-    return True
+            return True
+    return False
 
 def is_chafa_available() -> bool:
     """Check if the 'chafa' command-line tool is available for ASCII art fallback."""
@@ -141,6 +141,7 @@ def show_inline_image(image_array: np.ndarray, display_scale = None, is_vector: 
                 ["chafa", "-"],  
                 input=image_bytes
             ).decode()
+            
             sys.stdout.write(f"\n{chafa_output}\a\n")
         else:
             sys.stdout.write(f"[INFO] Use supported terminal or install 'chafa' for ascii art fallback. Detected: {_TERMINAL_INFO}\n")
