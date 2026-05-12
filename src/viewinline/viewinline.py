@@ -33,7 +33,7 @@ import warnings
 warnings.filterwarnings("ignore", message="More than one layer found", category=UserWarning)
 warnings.filterwarnings("ignore", message="Dataset has no geotransform", category=UserWarning)
 
-__version__ = "0.2.1"
+__version__ = "0.2.2"
 
 AVAILABLE_COLORMAPS = [
     "viridis", "inferno", "magma", "plasma",
