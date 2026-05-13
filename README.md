@@ -80,6 +80,7 @@ Install chafa once (it's a system binary, available across all conda/virtualenv 
 brew install chafa          # macOS
 sudo apt install chafa      # Debian/Ubuntu
 sudo dnf install chafa      # Fedora
+scoop install chafa         # Windows
 ```
 Without chafa, terminals outside the native list above show an info message instead of an image.
 You can also force the chafa path on any terminal by setting `INLINE_VIEWER_ENGINE=chafa`.
