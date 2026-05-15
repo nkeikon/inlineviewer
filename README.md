@@ -31,6 +31,7 @@ pip install viewinline
 # Rasters
 viewinline path/to/file.tif
 viewinline R.tif G.tif B.tif                 # RGB composite (also works with --rgbfiles)
+viewinline hyperspectral.nc --band 50
 viewinline path/to/multiband.tif --rgb 3 2 1
 viewinline path/to/folder --gallery 4x3      # show image gallery (e.g. 4x3 grid)
 
@@ -39,6 +40,7 @@ viewinline file.nc                           # list variables
 viewinline file.nc --subset 2                # display variable 2
 viewinline file.nc --subset 1 --band 10      # variable 1, timestep 10 --band or --timestep
 viewinline temp.nc --subset 1 --colormap plasma --vmin 273 --vmax 310
+viewinline hyperspectral.nc --subset 1 --reduce NumberOfScanlines  # override auto-detected axis
 
 # Vectors
 viewinline path/to/vector.geojson
@@ -137,7 +139,9 @@ You can also force the chafa path on any terminal by setting `INLINE_VIEWER_ENGI
 
 **NetCDF/HDF notes:**
 - viewinline lists only variables that can be displayed as 2D or 3D arrays
-- Variables with additional dimensions (e.g., vertical levels) may be listed but will fail to display with a clear error message
+- 3D variables with time or known spatial dimensions are auto-handled (slices along the non-spatial axis)
+- For 3D variables with non-standard dimensions (e.g., hyperspectral cubes like PICARD), viewinline auto-detects the band axis by smallest dimension. Use `--reduce DIM_NAME` to override.
+- Variables with 4+ dimensions are not supported
 - For a complete variable list, use `ncdump -h file.nc` or `viewtif`
 
 ## Dependencies
@@ -178,6 +182,7 @@ Raster:
   --band BAND           Band number to display (single raster), or slice number for NetCDF. (default: 1)
   --timestep INTEGER    Alias for --band when working with NetCDF files.
   --subset INTEGER      Variable index for NetCDF/HDF files (e.g., --subset 1).
+  --reduce DIM_NAME     For 3D NetCDF variables, specify which dimension to use as the band/slider axis.  Auto-detected if omitted.
   --colormap            Apply colormap to single-band rasters. Flag without the color scheme → 'terrain'.
   --rgb R G B           Three band numbers for RGB display (e.g., --rgb 4 3 2). Overrides default 1 2 3.
   --rgbfiles R G B      Three single-band rasters for RGB composite. Can also provide as positional arguments.

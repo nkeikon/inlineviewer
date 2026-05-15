@@ -28,12 +28,19 @@ from matplotlib import colormaps
 import matplotlib as mpl
 import subprocess
 
+try:
+    import netCDF4
+    HAS_NETCDF4 = True
+except ImportError:
+    HAS_NETCDF4 = False
+
 import warnings
 
 warnings.filterwarnings("ignore", message="More than one layer found", category=UserWarning)
 warnings.filterwarnings("ignore", message="Dataset has no geotransform", category=UserWarning)
+warnings.filterwarnings("ignore", message="invalid scale_factor or add_offset attribute", category=UserWarning)
 
-__version__ = "0.2.3"
+__version__ = "0.3.0"
 
 AVAILABLE_COLORMAPS = [
     "viridis", "inferno", "magma", "plasma",
@@ -184,14 +191,7 @@ def show_inline_image(image_array: np.ndarray, display_scale = None, is_vector: 
 
     if _TERMINAL_SUPPORTS_IMAGES:
         sys.stdout.write(f"\033]1337;File=inline=1;width={width_pct}%:{encoded}\a\n")
-    else:
-        # if is_chafa_available():
-        #     chafa_output = subprocess.check_output(
-        #         ["chafa", "-"],  
-        #         input=image_bytes
-        #     ).decode()
-            
-        #     sys.stdout.write(f"\n{chafa_output}\a\n")
+    else: 
         if is_chafa_available():
             # Inside tmux, force chafa to use block-art symbols instead of
             # graphics protocols. Tmux mangles kitty graphics and sixel
@@ -227,9 +227,9 @@ def show_image_auto(img: np.ndarray, display_scale=None, is_vector: bool = False
     try:
         show_inline_image(img, display_scale, is_vector)
         if _TERMINAL_SUPPORTS_IMAGES:
-            print("[VIEW] Image rendered")
+            print("[VIEW] Inline render complete")
         elif is_chafa_available():
-            print("[VIEW] Rendered via chafa")
+            print("[VIEW] Inline render complete via chafa")
         # If neither path applies, show_inline_image already printed the info message
     except Exception as e:
         print(f"[ERROR] Failed to render image: {e}")
@@ -261,7 +261,6 @@ def load_csv_to_df(path: str) -> pd.DataFrame:
     except Exception as e:
         print(f"[ERROR] Failed to read CSV: {e}")
         return pd.DataFrame()
-
 
 # =============================================================
 # Preview
@@ -643,6 +642,177 @@ def render_simple_image(filepath: str, args) -> None:
     except Exception as e:
         print(f"[ERROR] Failed to load image: {e}")
 
+def render_netcdf_via_netcdf4(path, args):
+    """Read a NetCDF file via netCDF4 (bypassing GDAL). Handles hierarchical
+    groups and hyperspectral cubes where GDAL aborts or interprets axes wrong.
+    """
+    if not HAS_NETCDF4:
+        print("[ERROR] netCDF4 not installed. Install with:")
+        print("        pip install netCDF4")
+        print("        or:  pip install viewinline[netcdf]")
+        return
+
+    try:
+        nc = netCDF4.Dataset(path)
+    except Exception as e:
+        print(f"[ERROR] Could not open NetCDF file: {e}")
+        return
+
+    # Recursively collect (path, variable) pairs across all groups
+    def collect_vars(group, prefix=""):
+        out = []
+        for name, var in group.variables.items():
+            full_name = f"{prefix}{name}"
+            out.append((full_name, var))
+        for sub_name, sub in group.groups.items():
+            out.extend(collect_vars(sub, f"{prefix}{sub_name}/"))
+        return out
+
+    all_vars = collect_vars(nc)
+
+    if not all_vars:
+        print("[ERROR] No variables found in file.")
+        nc.close()
+        return
+
+    # If no --subset, list all variables and exit
+    if not args.subset:
+        print(f"Found {len(all_vars)} variables in {os.path.basename(path)}:")
+        for i, (name, var) in enumerate(all_vars, 1):
+            shape_str = "x".join(str(s) for s in var.shape)
+            print(f"  [{i}] {name}  ({shape_str}, {var.dtype})")
+        print(f"\nUse --subset <N> to display a specific variable.")
+        nc.close()
+        return
+
+    # Validate --subset
+    if args.subset < 1 or args.subset > len(all_vars):
+        print(f"[ERROR] --subset must be between 1 and {len(all_vars)}")
+        nc.close()
+        return
+
+    var_name, var = all_vars[args.subset - 1]
+    print(f"[INFO] Displaying variable {args.subset}: {var_name}")
+    print(f"[DATA] Shape: {var.shape}  dtype: {var.dtype}  dims: {var.dimensions}")
+
+    # Detect dimensionality and read the right slice
+    if var.ndim == 2:
+        data = np.asarray(var[:, :], dtype=np.float64)
+        slice_info = "2D variable"
+
+    elif var.ndim == 3:
+        spatial_dims = {'lat', 'lon', 'latitude', 'longitude', 'y', 'x'}
+        
+        spectral_axis = None
+        
+        # 1. User override via --reduce
+        if args.reduce_dim is not None:
+            if args.reduce_dim in var.dimensions:
+                spectral_axis = list(var.dimensions).index(args.reduce_dim)
+                print(f"[INFO] Using user-specified --reduce '{args.reduce_dim}'")
+            else:
+                print(f"[ERROR] --reduce '{args.reduce_dim}' is not a dimension of this variable.")
+                print(f"[INFO] Available dimensions: {list(var.dimensions)}")
+                nc.close()
+                return
+        
+        # 2. Standard convention: reduce along the non-spatial dim
+        if spectral_axis is None:
+            has_standard_spatial = any(d in spatial_dims for d in var.dimensions)
+            if has_standard_spatial:
+                for i, dim_name in enumerate(var.dimensions):
+                    if dim_name not in spatial_dims:
+                        spectral_axis = i
+                        break
+        
+        # 3. Fallback heuristic: smallest dim is typically the band axis
+        if spectral_axis is None:
+            sizes = [(i, var.shape[i]) for i in range(3)]
+            spectral_axis = min(sizes, key=lambda x: x[1])[0]
+            print(f"[INFO] Non-standard dimensions detected: {list(var.dimensions)}")
+            print(f"[INFO] Reducing along '{var.dimensions[spectral_axis]}' (size {var.shape[spectral_axis]}, assumed band/spectral axis)")
+            print(f"[INFO] If this is not correct, use --reduce DIM_NAME to override.")
+        
+        # Slice along chosen axis
+        band_count = var.shape[spectral_axis]
+        band_num = args.band if args.band is not None else 1
+        band_idx = max(0, min(band_num - 1, band_count - 1))
+        slicer = [slice(None)] * 3
+        slicer[spectral_axis] = band_idx
+        data = np.asarray(var[tuple(slicer)], dtype=np.float64)
+        slice_info = f"slice along axis {spectral_axis} ({var.dimensions[spectral_axis]}), band {band_idx + 1} of {band_count}"
+
+    else:
+        print(f"[ERROR] viewinline only supports 2D or 3D variables. This one is {var.ndim}D.")
+        nc.close()
+        return
+
+    print(f"[DATA] {slice_info}")
+    # Apply fill value
+    fill = getattr(var, '_FillValue', None)
+    if fill is not None:
+        data = np.where(data == fill, np.nan, data)
+    # Flip vertically if data is stored south-to-north so north appears at top.
+    # Determine which dims remain after slicing — for the 2D result, figure out
+    # which axis (0 or 1) corresponds to latitude, and check that dim's coord values.
+    if var.ndim == 2:
+        remaining_dims = list(var.dimensions)
+    elif var.ndim == 3:
+        if spectral_axis is not None:
+            remaining_dims = [d for i, d in enumerate(var.dimensions) if i != spectral_axis]
+        else:
+            remaining_dims = list(var.dimensions[1:])  # axis 0 was reduced
+    else:
+        remaining_dims = []
+    lat_names = {'lat', 'latitude', 'y'}
+    for axis_in_2d, dim_name in enumerate(remaining_dims):
+        if dim_name in lat_names and dim_name in nc.variables:
+            lat_vals = nc[dim_name][:]
+            if len(lat_vals) > 1 and lat_vals[0] < lat_vals[-1]:
+                data = np.flip(data, axis=axis_in_2d)
+                print(f"[INFO] Flipped along '{dim_name}' for display (data stored south-to-north).")
+            break
+    nc.close()
+
+    # Normalize and display
+    band_u8 = normalize_to_uint8(data, vmin=args.vmin, vmax=args.vmax,
+                                 nodata=args.nodata)
+
+    if args.colormap:
+        cmap = colormaps[args.colormap]
+        colored = cmap(band_u8 / 255.0)
+        img = (colored[:, :, :3] * 255).astype(np.uint8)
+        print(f"[INFO] Applying colormap: {args.colormap}")
+    else:
+        img = np.stack([band_u8] * 3, axis=-1)
+        print("[INFO] Displaying grayscale")
+
+    # Resize to terminal
+    H, W = img.shape[:2]
+    if args.display:
+        new_w, new_h = max(1, int(W * args.display)), max(1, int(H * args.display))
+        img = np.array(Image.fromarray(img).resize((new_w, new_h), Image.BILINEAR))
+        print(f"[VIEW] Manual resize ×{args.display:.2f} → {new_w}×{new_h}px")
+    # else:
+    #     img, scale = resize_to_terminal(img)
+    #     print(f"[VIEW] Rendered image size → {img.shape[1]}×{img.shape[0]}px (size={scale:.2f})")
+    else:
+            max_dim = 2000
+            if max(img.shape[:2]) > max_dim:
+                scale = max_dim / max(img.shape[:2])
+                new_w = int(img.shape[1] * scale)
+                new_h = int(img.shape[0] * scale)
+                img = np.array(Image.fromarray(img).resize((new_w, new_h), Image.BILINEAR))
+                print(f"[VIEW] Downsampled from {W}×{H}px to {new_w}×{new_h}px (scale={scale:.2f})")
+                print(f"[INFO] Use --display 1 for full resolution.")
+            else:
+            # (matches the width_pct logic in show_inline_image)
+                display_pct = args.display if args.display is not None else 0.33
+            
+                print(f"[VIEW] Rendered image size → {img.shape[1]}×{img.shape[0]}px (size={display_pct:.2f})")  
+       
+    show_image_auto(img, getattr(args, "display", None), is_vector=False)
+
 def render_raster(paths: list[str], args) -> None:
     try:
         import rasterio
@@ -655,8 +825,13 @@ def render_raster(paths: list[str], args) -> None:
 
         if len(paths) == 1:
             path = paths[0]
+
+            if path.lower().endswith('.nc'):
+                render_netcdf_via_netcdf4(path, args)
+                return
             
             # Handle NetCDF/HDF with subdatasets
+        
             if path.lower().endswith(('.nc', '.hdf', '.hdf5', '.h5')):
                 try:
                 
@@ -732,7 +907,7 @@ def render_raster(paths: list[str], args) -> None:
                         resampling=rasterio.enums.Resampling.bilinear
                     )
 
-                    print(f"[PROC] Downsampled for preview → {out_w}×{out_h}px (scale={scale:.3f})")
+                    print(f"[VIEW] Downsampled for preview → {out_w}×{out_h}px (scale={scale:.3f})")
                 else:
                     data = ds.read()
 
@@ -744,8 +919,11 @@ def render_raster(paths: list[str], args) -> None:
                     print(f"[INFO] Multi-band raster detected ({band_count} bands)")
 
             # MULTI BAND RGB (skip for NetCDF - treat as slices/timesteps, not RGB)
-            if band_count >= 3 and not paths[0].lower().endswith('.nc'):
-
+            # if band_count >= 3 and not paths[0].lower().endswith('.nc'):
+            # Auto-composite to RGB only when user didn't explicitly ask for a single band
+            # user_specified_band = args.band is not None and args.band != 1
+            user_specified_band = args.band is not None
+            if band_count >= 3 and not paths[0].lower().endswith('.nc') and not user_specified_band:
 
                 if getattr(args, "rgb", None):
                     try:
@@ -774,7 +952,8 @@ def render_raster(paths: list[str], args) -> None:
             # SINGLE BAND
             else:
 
-                band_idx = max(0, min(args.band - 1, band_count - 1))
+                band_num = args.band if args.band is not None else 1
+                band_idx = max(0, min(band_num - 1, band_count - 1))
                 # print(f"[INFO] Displaying band {band_idx + 1} of {band_count}")
                 raw_band = data[band_idx].astype(float)
 
@@ -851,7 +1030,7 @@ def render_raster(paths: list[str], args) -> None:
             print(f"[ERROR] Cannot display this variable.")
             print("[INFO] viewinline only supports 2D or 3D NetCDF variables")
         else:
-            print(f"[ERROR] Raster rendering failed: {e}")
+            print(f"[ERROR] Inline render failed: {e}")
 
 
 def render_gallery(folder: str, grid: str = "4x4", display_scale=None, is_vector=False) -> None:
@@ -955,13 +1134,6 @@ def render_vector(path, args):
             args.layer = first
     except Exception as e:
         print(f"[WARN] Could not list layers: {e}")
-
-    # try:
-    #     gdf = gpd.read_file(path, layer=getattr(args, "layer", None))
-    #     print(f"[DATA] Vector loaded: {os.path.basename(path)} ({len(gdf)} features)")
-    # except Exception as e:
-    #     print(f"[ERROR] Failed to read vector: {e}")
-    #     return
 
     try:
         # Use read_parquet for parquet/geoparquet files
@@ -1304,7 +1476,7 @@ def main() -> None:
 
     # Raster options
     parser.add_argument(
-        "--band", type=int, default=1,
+        "--band", type=int, default=None,
         help="Band number to display (single raster case), or slice number for NetCDF."
     )
     parser.add_argument(
@@ -1319,6 +1491,10 @@ def main() -> None:
     parser.add_argument(
         "--rgb", nargs=3, type=int, metavar=('R', 'G', 'B'), default=None,
         help="Three band numbers for RGB display (e.g., --rgb 4 3 2). Overrides default 1 2 3."
+    )
+    parser.add_argument(
+        "--rgbfiles", nargs=3, type=str, metavar=('R', 'G', 'B'),
+        help="Three single-band rasters for RGB composite (e.g., --rgbfiles R.tif G.tif B.tif). Can also provide as positional arguments without the flag."
     )
     parser.add_argument(
         "--vmin", type=float, default=None,
@@ -1341,8 +1517,9 @@ def main() -> None:
         help="Variable index for NetCDF files (e.g. --subset 1)."
     )
     parser.add_argument(
-        "--rgbfiles", nargs=3, type=str, metavar=('R', 'G', 'B'),
-        help="Three single-band rasters for RGB composite (e.g., --rgbfiles R.tif G.tif B.tif). Can also provide as positional arguments without the flag."
+        "--reduce", dest="reduce_dim", type=str, default=None,
+        metavar="DIM_NAME",
+        help="For 3D NetCDF variables, specify which dimension to use as the band axis (auto-detected if omitted)."
     )
 
     # CSV options
@@ -1426,7 +1603,7 @@ def main() -> None:
     parser.add_argument(
     "--table", action="store_true",
     help="Display vector/parquet file as tabular data instead of rendering geometry."
-)
+    ) 
 
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
 
