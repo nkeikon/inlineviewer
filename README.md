@@ -136,6 +136,25 @@ You can also force the chafa path on any terminal by setting `INLINE_VIEWER_ENGI
 
 **Gallery view**
 - Display all images in a folder with `--gallery 4x4`
+- Display file labels `--gallery-labels name|path|none` (filename only, full path, or no labels). Labels for directories are rendered reversed, labels of unsupported files are rendered muted. Labels of supported files are rendered normally.
+- Thumbnail size can be adjusted with `--thumb-size WIDTH HEIGHT` (default 128x128)
+- Parameters `--include` and `--exclude` accept regex patterns matched against the full file path (not just basename), e.g. `path/to/folder/subdir/image.tif`. If specified, the include pattern is applied first, followed by the exclude pattern.
+- By default, only supported files are rendered in the gallery. If `--gallery-keep-unsupported` is set, unsupported files and directories are also rendered in the gallery using placeholder images instead of skipping them.
+- Examples of rendering galleries with different options:
+```bash
+# do not render labels (most compatible with previous versions)
+viewinline path/to/folder --gallery 4x4 --gallery-labels none
+
+# only include .tif files from a specific subfolder in the full path
+viewinline path/to/folder --gallery 5x5 --include ".*/year_2023/.*\.tif$" --gallery-labels path
+
+# exclude files from selected subfolders (full-path match) and all .txt files
+viewinline path/to/folder --gallery 3x3 --exclude ".*/archive/|.*/tmp/|.*\.txt$" --thumb-size 64 64
+
+# keep unsupported files in the gallery with placeholder thumbnails
+viewinline path/to/folder --gallery 4x4 --gallery-keep-unsupported
+```
+
 
 **NetCDF/HDF notes:**
 - viewinline lists only variables that can be displayed as 2D or 3D arrays

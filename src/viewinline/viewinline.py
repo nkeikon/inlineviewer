@@ -27,6 +27,10 @@ from PIL import Image, ImageOps, ImageDraw, ImageFont
 from matplotlib import colormaps
 import matplotlib as mpl
 import subprocess
+import re
+import logging
+import copy
+from functools import wraps
 
 try:
     import netCDF4
@@ -40,7 +44,10 @@ warnings.filterwarnings("ignore", message="More than one layer found", category=
 warnings.filterwarnings("ignore", message="Dataset has no geotransform", category=UserWarning)
 warnings.filterwarnings("ignore", message="invalid scale_factor or add_offset attribute", category=UserWarning)
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
+
+logger = logging.getLogger("viewinline")
+logging.basicConfig(level=logging.INFO, format="%(message)s")
 
 AVAILABLE_COLORMAPS = [
     "viridis", "inferno", "magma", "plasma",
@@ -104,6 +111,31 @@ _TERMINALS_WITHOUT_IMAGES = [
     'putty',
     'Windows Terminal',
 ]
+
+_SUPPORTED_RASTER_EXTS = (".png", ".jpg", ".jpeg", ".tif", ".tiff", ".nc", ".hdf", ".hdf5", ".h5")
+_SUPPORTED_VECTOR_EXTS = (".shp", ".geojson", ".json", ".gpkg", ".parquet", ".geoparquet")
+
+
+def quiet(func):
+    """Decorator to suppress stdout and stderr during function execution.
+
+    Useful for rendering thumbnails in gallery mode.
+    
+    Usage:
+    x = quiet(some_function)(*args, **kwargs)
+    """
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        old_handlers = [h for h in logger.handlers]
+        for h in old_handlers:
+            logger.removeHandler(h)
+        try:
+            return func(*args, **kwargs)
+        finally:
+            for h in old_handlers:
+                logger.addHandler(h)
+            pass
+    return wrapper
 
 def detect_terminal() -> dict[str, str]:
     """Detect terminal emulator by checking environment variables and parent process.
@@ -227,14 +259,15 @@ def show_image_auto(img: np.ndarray, display_scale=None, is_vector: bool = False
     try:
         show_inline_image(img, display_scale, is_vector)
         if _TERMINAL_SUPPORTS_IMAGES:
-            print("[VIEW] Inline render complete")
+            logger.info("[VIEW] Inline render complete")
         elif is_chafa_available():
-            print("[VIEW] Inline render complete via chafa")
+            logger.info("[VIEW] Inline render complete via chafa")    
         # If neither path applies, show_inline_image already printed the info message
     except Exception as e:
-        print(f"[ERROR] Failed to render image: {e}")
+        logger.error(f"[ERROR] Failed to render image: {e}")
         import traceback
-        traceback.print_exc()
+        trace = traceback.format_exc()
+        logger.error(trace)
 
 def resize_to_terminal(img: np.ndarray) -> tuple[np.ndarray, float]:
     """Resize image to fit terminal window (approx 8x16 pixel cells)."""
@@ -259,7 +292,7 @@ def load_csv_to_df(path: str) -> pd.DataFrame:
     try:
         return pd.read_csv(path)
     except Exception as e:
-        print(f"[ERROR] Failed to read CSV: {e}")
+        logger.error(f"[ERROR] Failed to read CSV: {e}")
         return pd.DataFrame()
 
 # =============================================================
@@ -269,7 +302,7 @@ def preview_df(df, max_rows: int = 10, query_mode: bool = False, filename: str =
     """Preview a pandas DataFrame."""
 
     if df is None or df.empty:
-        print("[WARN] No rows to preview.")
+        logger.warning("[WARN] No rows to preview.")
         return
 
     n_rows, n_cols = df.shape
@@ -279,7 +312,7 @@ def preview_df(df, max_rows: int = 10, query_mode: bool = False, filename: str =
     # -------------------------------------------------------------
     if not query_mode:
         name = filename if filename else "DataFrame"
-        print(f"[DATA] CSV file: {name} — {n_rows:,} rows × {n_cols} columns")
+        logger.info(f"[DATA] CSV file: {name} — {n_rows:,} rows × {n_cols} columns")
 
     # -------------------------------------------------------------
     # Decide how many rows to show
@@ -310,39 +343,39 @@ def preview_df(df, max_rows: int = 10, query_mode: bool = False, filename: str =
 
     sep = "+" + "+".join("-" * (w + 2) for w in col_widths) + "+"
 
-    print(sep)
-    print(fmt_row(columns))
-    print(sep)
+    logger.info(sep)
+    logger.info(fmt_row(columns))
+    logger.info(sep)
 
     for _, r in rows_to_show.iterrows():
-        print(fmt_row(r.tolist()))
+        logger.info(fmt_row(r.tolist()))
 
-    print(sep)
+    logger.info(sep)
 
-    print("[INFO] Use --describe for summary or --hist for histograms.")
+    logger.info("[INFO] Use --describe for summary or --hist for histograms.")
 
 # =============================================================
 # Describe
 # =============================================================
 def describe_df(df, column=None):
     if df is None or df.empty:
-        print("[WARN] No data rows found.")
+        logger.warning("[WARN] No data rows found.")
         return
 
     numeric_df = df.select_dtypes(include="number")
 
     if numeric_df.empty:
-        print("[INFO] No numeric columns found.")
+        logger.info("[INFO] No numeric columns found.")
         return
 
     if column:
         if column not in numeric_df.columns:
-            print(f"[WARN] Column '{column}' not numeric.")
+            logger.warning(f"[WARN] Column '{column}' not numeric.")
             return
         numeric_df = numeric_df[[column]]
-        print(f"[SUMMARY] Column '{column}' (describe):")
+        logger.info(f"[SUMMARY] Column '{column}' (describe):")
     else:
-        print("[SUMMARY] Numeric columns (describe):")
+        logger.info("[SUMMARY] Numeric columns (describe):")
 
     headers = ["Column", "count", "mean", "std", "min", "25%", "50%", "75%", "max"]
     col_widths = [12, 8, 10, 10, 10, 10, 10, 10, 10]
@@ -350,9 +383,9 @@ def describe_df(df, column=None):
     sep = "+" + "+".join("-" * (w + 2) for w in col_widths) + "+"
     fmt = "| " + " | ".join(f"{{:<{w}}}" for w in col_widths) + " |"
 
-    print(sep)
-    print(fmt.format(*headers))
-    print(sep)
+    logger.info(sep)
+    logger.info(fmt.format(*headers))
+    logger.info(sep)
 
     for name in numeric_df.columns:
         vals = numeric_df[name].dropna().astype(float).values
@@ -374,9 +407,9 @@ def describe_df(df, column=None):
             f"{vals.max():.3f}",
         ]
 
-        print(fmt.format(*row))
+        logger.info(fmt.format(*row))
 
-    print(sep)
+    logger.info(sep)
 
 # =============================================================
 # Histogram
@@ -384,18 +417,18 @@ def describe_df(df, column=None):
 def inline_histogram_df(df, column=None, bins=20, display_scale=None, is_vector=False):
 
     if df is None or df.empty:
-        print("[WARN] No data to plot.")
+        logger.warning("[WARN] No data to plot.")
         return
 
     numeric_df = df.select_dtypes(include="number")
 
     if numeric_df.empty:
-        print("[INFO] No numeric columns found.")
+        logger.info("[INFO] No numeric columns found.")
         return
 
     if column:
         if column not in numeric_df.columns:
-            print(f"[WARN] Column '{column}' not numeric.")
+            logger.warning(f"[WARN] Column '{column}' not numeric.")
             return
         cols = [(column, numeric_df[column].dropna().values)]
     else:
@@ -409,7 +442,7 @@ def draw_histograms(cols, bins, display_scale=None, is_vector=False):
     import math
 
     if not cols:
-        print("[INFO] No numeric columns found.")
+        logger.info("[INFO] No numeric columns found.")
         return
 
     if len(cols) == 1:
@@ -441,9 +474,10 @@ def draw_histograms(cols, bins, display_scale=None, is_vector=False):
         counts, edges = np.histogram(vals, bins=bins)
 
         idx = np.argmax(counts)
-        print(f"[INFO] Column: {col}")
-        print(f"       Most frequent range: {edges[idx]:.2f} – {edges[idx+1]:.2f}")
-        print(f"       Values in this range: {counts[idx]}")
+        logger.info((
+            f"[INFO] Column: {col}\n"
+            f"       Most frequent range: {edges[idx]:.2f} – {edges[idx+1]:.2f}\n"
+            f"       Values in this range: {counts[idx]}"))
 
         counts = counts.astype(float)
         counts /= counts.max() if counts.max() else 1
@@ -503,16 +537,16 @@ def plot_scatter_df(df, x_col: str, y_col: str, display_scale=None, is_vector=Fa
     import io
 
     if df is None or df.empty:
-        print("[WARN] No data to plot.")
+        logger.warning("[WARN] No data to plot.")
         return
 
     if x_col not in df.columns or y_col not in df.columns:
-        print(f"[ERROR] Columns '{x_col}' or '{y_col}' not found.")
+        logger.error(f"[ERROR] Columns '{x_col}' or '{y_col}' not found.")
         return
 
     df = df[[x_col, y_col]].apply(pd.to_numeric, errors="coerce").dropna()
     if df.empty:
-        print("[WARN] No numeric values to plot.")
+        logger.warning("[WARN] No numeric values to plot.")
         return
 
     w, h = 420, 300
@@ -533,7 +567,7 @@ def plot_scatter_df(df, x_col: str, y_col: str, display_scale=None, is_vector=Fa
     y_min, y_max = y_vals.min(), y_vals.max()
 
     if x_max == x_min or y_max == y_min:
-        print("[WARN] Scatter plot requires at least two distinct values.")
+        logger.warning("[WARN] Scatter plot requires at least two distinct values.")
         return
 
     def scale_x(x):
@@ -594,7 +628,7 @@ def normalize_to_uint8(band: np.ndarray, vmin=None, vmax=None, nodata=None) -> n
     # --- Manual scaling ---
     if vmin is not None and vmax is not None:
         mn, mx = vmin, vmax
-        print(f"[VIEW] Using manual scaling: {mn} to {mx}")
+        logger.info(f"[VIEW] Using manual scaling: {mn} to {mx}")
 
     # --- Percentile fallback ---
     else:
@@ -627,35 +661,36 @@ def render_simple_image(filepath: str, args) -> None:
             img_array = img_array[:, :, :3]
         
         H, W = img_array.shape[:2]
-        print(f"[DATA] Image loaded: {os.path.basename(filepath)} ({W}×{H})")
+        logger.info(f"[DATA] Image loaded: {os.path.basename(filepath)} ({W}×{H})")
         
         if args.display:
             new_w, new_h = max(1, int(W * args.display)), max(1, int(H * args.display))
             img_array = np.array(Image.fromarray(img_array).resize((new_w, new_h), Image.BILINEAR))
-            print(f"[VIEW] Manual resize ×{args.display:.2f} → {new_w}×{new_h}px")
+            logger.info(f"[VIEW] Manual resize ×{args.display:.2f} → {new_w}×{new_h}px")
         else:
             img_array, scale = resize_to_terminal(img_array)
-            print(f"[VIEW] Rendered image size → {img_array.shape[1]}×{img_array.shape[0]}px (size={scale:.2f})")
+            logger.info(f"[VIEW] Rendered image size → {img_array.shape[1]}×{img_array.shape[0]}px (size={scale:.2f})")
         
         show_image_auto(img_array, getattr(args, "display", None), is_vector=False)
         
     except Exception as e:
-        print(f"[ERROR] Failed to load image: {e}")
+        logger.error(f"[ERROR] Failed to load image: {e}")
 
 def render_netcdf_via_netcdf4(path, args):
     """Read a NetCDF file via netCDF4 (bypassing GDAL). Handles hierarchical
     groups and hyperspectral cubes where GDAL aborts or interprets axes wrong.
     """
     if not HAS_NETCDF4:
-        print("[ERROR] netCDF4 not installed. Install with:")
-        print("        pip install netCDF4")
-        print("        or:  pip install viewinline[netcdf]")
+        logger.error((
+            "[ERROR] netCDF4 not installed. Install with:\n"
+            "        pip install netCDF4\n"
+            "        or:  pip install viewinline[netcdf]"))
         return
 
     try:
         nc = netCDF4.Dataset(path)
     except Exception as e:
-        print(f"[ERROR] Could not open NetCDF file: {e}")
+        logger.error(f"[ERROR] Could not open NetCDF file: {e}")
         return
 
     # Recursively collect (path, variable) pairs across all groups
@@ -671,29 +706,29 @@ def render_netcdf_via_netcdf4(path, args):
     all_vars = collect_vars(nc)
 
     if not all_vars:
-        print("[ERROR] No variables found in file.")
+        logger.error("[ERROR] No variables found in file.")
         nc.close()
         return
 
     # If no --subset, list all variables and exit
     if not args.subset:
-        print(f"Found {len(all_vars)} variables in {os.path.basename(path)}:")
+        logger.info(f"Found {len(all_vars)} variables in {os.path.basename(path)}:")
         for i, (name, var) in enumerate(all_vars, 1):
             shape_str = "x".join(str(s) for s in var.shape)
-            print(f"  [{i}] {name}  ({shape_str}, {var.dtype})")
-        print(f"\nUse --subset <N> to display a specific variable.")
+            logger.info(f"  [{i}] {name}  ({shape_str}, {var.dtype})")
+        logger.info(f"\nUse --subset <N> to display a specific variable.")
         nc.close()
         return
 
     # Validate --subset
     if args.subset < 1 or args.subset > len(all_vars):
-        print(f"[ERROR] --subset must be between 1 and {len(all_vars)}")
+        logger.error(f"[ERROR] --subset must be between 1 and {len(all_vars)}")
         nc.close()
         return
 
     var_name, var = all_vars[args.subset - 1]
-    print(f"[INFO] Displaying variable {args.subset}: {var_name}")
-    print(f"[DATA] Shape: {var.shape}  dtype: {var.dtype}  dims: {var.dimensions}")
+    logger.info(f"[INFO] Displaying variable {args.subset}: {var_name}")
+    logger.info(f"[DATA] Shape: {var.shape}  dtype: {var.dtype}  dims: {var.dimensions}")
 
     # Detect dimensionality and read the right slice
     if var.ndim == 2:
@@ -709,10 +744,10 @@ def render_netcdf_via_netcdf4(path, args):
         if args.reduce_dim is not None:
             if args.reduce_dim in var.dimensions:
                 spectral_axis = list(var.dimensions).index(args.reduce_dim)
-                print(f"[INFO] Using user-specified --reduce '{args.reduce_dim}'")
+                logger.info(f"[INFO] Using user-specified --reduce '{args.reduce_dim}'")
             else:
-                print(f"[ERROR] --reduce '{args.reduce_dim}' is not a dimension of this variable.")
-                print(f"[INFO] Available dimensions: {list(var.dimensions)}")
+                logger.error(f"[ERROR] --reduce '{args.reduce_dim}' is not a dimension of this variable.")
+                logger.info(f"[INFO] Available dimensions: {list(var.dimensions)}")
                 nc.close()
                 return
         
@@ -729,9 +764,9 @@ def render_netcdf_via_netcdf4(path, args):
         if spectral_axis is None:
             sizes = [(i, var.shape[i]) for i in range(3)]
             spectral_axis = min(sizes, key=lambda x: x[1])[0]
-            print(f"[INFO] Non-standard dimensions detected: {list(var.dimensions)}")
-            print(f"[INFO] Reducing along '{var.dimensions[spectral_axis]}' (size {var.shape[spectral_axis]}, assumed band/spectral axis)")
-            print(f"[INFO] If this is not correct, use --reduce DIM_NAME to override.")
+            logger.info(f"[INFO] Non-standard dimensions detected: {list(var.dimensions)}")
+            logger.info(f"[INFO] Reducing along '{var.dimensions[spectral_axis]}' (size {var.shape[spectral_axis]}, assumed band/spectral axis)")
+            logger.info(f"[INFO] If this is not correct, use --reduce DIM_NAME to override.")
         
         # Slice along chosen axis
         band_count = var.shape[spectral_axis]
@@ -743,11 +778,11 @@ def render_netcdf_via_netcdf4(path, args):
         slice_info = f"slice along axis {spectral_axis} ({var.dimensions[spectral_axis]}), band {band_idx + 1} of {band_count}"
 
     else:
-        print(f"[ERROR] viewinline only supports 2D or 3D variables. This one is {var.ndim}D.")
+        logger.error(f"[ERROR] viewinline only supports 2D or 3D variables. This one is {var.ndim}D.")
         nc.close()
         return
 
-    print(f"[DATA] {slice_info}")
+    logger.info(f"[DATA] {slice_info}")
     # Apply fill value
     fill = getattr(var, '_FillValue', None)
     if fill is not None:
@@ -770,7 +805,7 @@ def render_netcdf_via_netcdf4(path, args):
             lat_vals = nc[dim_name][:]
             if len(lat_vals) > 1 and lat_vals[0] < lat_vals[-1]:
                 data = np.flip(data, axis=axis_in_2d)
-                print(f"[INFO] Flipped along '{dim_name}' for display (data stored south-to-north).")
+                logger.info(f"[INFO] Flipped along '{dim_name}' for display (data stored south-to-north).")
             break
     nc.close()
 
@@ -782,20 +817,20 @@ def render_netcdf_via_netcdf4(path, args):
         cmap = colormaps[args.colormap]
         colored = cmap(band_u8 / 255.0)
         img = (colored[:, :, :3] * 255).astype(np.uint8)
-        print(f"[INFO] Applying colormap: {args.colormap}")
+        logger.info(f"[INFO] Applying colormap: {args.colormap}")
     else:
         img = np.stack([band_u8] * 3, axis=-1)
-        print("[INFO] Displaying grayscale")
+        logger.info("[INFO] Displaying grayscale")
 
     # Resize to terminal
     H, W = img.shape[:2]
     if args.display:
         new_w, new_h = max(1, int(W * args.display)), max(1, int(H * args.display))
         img = np.array(Image.fromarray(img).resize((new_w, new_h), Image.BILINEAR))
-        print(f"[VIEW] Manual resize ×{args.display:.2f} → {new_w}×{new_h}px")
+        logger.info(f"[VIEW] Manual resize ×{args.display:.2f} → {new_w}×{new_h}px")
     # else:
     #     img, scale = resize_to_terminal(img)
-    #     print(f"[VIEW] Rendered image size → {img.shape[1]}×{img.shape[0]}px (size={scale:.2f})")
+    #     logger.info(f"[VIEW] Rendered image size → {img.shape[1]}×{img.shape[0]}px (size={scale:.2f})")
     else:
             max_dim = 2000
             if max(img.shape[:2]) > max_dim:
@@ -803,23 +838,24 @@ def render_netcdf_via_netcdf4(path, args):
                 new_w = int(img.shape[1] * scale)
                 new_h = int(img.shape[0] * scale)
                 img = np.array(Image.fromarray(img).resize((new_w, new_h), Image.BILINEAR))
-                print(f"[VIEW] Downsampled from {W}×{H}px to {new_w}×{new_h}px (scale={scale:.2f})")
-                print(f"[INFO] Use --display 1 for full resolution.")
+                logger.info(f"[VIEW] Downsampled from {W}×{H}px to {new_w}×{new_h}px (scale={scale:.2f})")
+                logger.info(f"[INFO] Use --display 1 for full resolution.")
             else:
             # (matches the width_pct logic in show_inline_image)
                 display_pct = args.display if args.display is not None else 0.33
             
-                print(f"[VIEW] Rendered image size → {img.shape[1]}×{img.shape[0]}px (size={display_pct:.2f})")  
+                logger.info(f"[VIEW] Rendered image size → {img.shape[1]}×{img.shape[0]}px (size={display_pct:.2f})")  
        
     show_image_auto(img, getattr(args, "display", None), is_vector=False)
 
-def render_raster(paths: list[str], args) -> None:
+def render_raster(paths: list[str], args) -> list[np.ndarray]:
+    results = []
     try:
         import rasterio
         import rasterio.enums
     except ImportError:
-        print("[ERROR] rasterio not installed. Please install with `pip install rasterio`.")
-        return
+        logger.error("[ERROR] rasterio not installed. Please install with `pip install rasterio`.")
+        return results
 
     try:
 
@@ -827,8 +863,9 @@ def render_raster(paths: list[str], args) -> None:
             path = paths[0]
 
             if path.lower().endswith('.nc'):
-                render_netcdf_via_netcdf4(path, args)
-                return
+                r = render_netcdf_via_netcdf4(path, args)
+                results.extend(r)
+                return results
             
             # Handle NetCDF/HDF with subdatasets
         
@@ -842,22 +879,22 @@ def render_raster(paths: list[str], args) -> None:
                     if subdatasets:
                         if not args.subset:
                             file_type = "variables" if path.lower().endswith('.nc') else "datasets"
-                            print(f"Found {len(subdatasets)} {file_type} in {os.path.basename(path)}:")
+                            logger.info(f"Found {len(subdatasets)} {file_type} in {os.path.basename(path)}:")
                             for i, sub in enumerate(subdatasets, 1):
                                 # Extract dataset/variable name from GDAL subdataset string
                                 ds_name = sub.split(':')[-1].lstrip('/')
-                                print(f"  [{i}] {ds_name}")
-                            print(f"\nUse --subset <N> to display a specific {file_type[:-1]}.")
-                            return
+                                logger.info(f"  [{i}] {ds_name}")
+                            logger.info(f"\nUse --subset <N> to display a specific {file_type[:-1]}.")
+                            return results
                         
                         # Select by index
                         if args.subset < 1 or args.subset > len(subdatasets):
-                            print(f"[ERROR] --subset must be between 1 and {len(subdatasets)}")
-                            return
+                            logger.error(f"[ERROR] --subset must be between 1 and {len(subdatasets)}")
+                            return results
                         
                         path = subdatasets[args.subset - 1]
                         var_name = path.split(':')[-1]
-                        print(f"[INFO] Displaying variable {args.subset}: {var_name}")
+                        logger.info(f"[INFO] Displaying variable {args.subset}: {var_name}")
                 
                 except rasterio.errors.RasterioIOError as e:
                     # GDAL lacks support, try h5py fallback for HDF5
@@ -865,29 +902,29 @@ def render_raster(paths: list[str], args) -> None:
                         try:
                             import h5py
                         except ImportError:
-                            print("[ERROR] HDF5 file cannot be opened.")
-                            print("[INFO] Requires either:")
-                            print("        - GDAL with HDF5 support, or")
-                            print("        - h5py: pip install h5py")
-                            return
+                            logger.error("[ERROR] HDF5 file cannot be opened.")
+                            logger.info(("[INFO] Requires either:\n"
+                                         "        - GDAL with HDF5 support, or\n"
+                                         "        - h5py: pip install h5py"))
+                            return results
                         
-                        # print("[ERROR] h5py fallback not yet implemented.")
-                        print("[INFO] Install GDAL with HDF5")
-                        return
+                        # logger.error("[ERROR] h5py fallback not yet implemented.")
+                        logger.info("[INFO] Install GDAL with HDF5")
+                        return results
                     
                     elif path.lower().endswith('.hdf'):
-                        print(f"[ERROR] Cannot open HDF4 file: {e}")
-                        print("[INFO] HDF4 requires GDAL with HDF4 support")
-                        return
+                        logger.error(f"[ERROR] Cannot open HDF4 file: {e}")
+                        logger.info("[INFO] HDF4 requires GDAL with HDF4 support")
+                        return results
                     else:
                         # NetCDF error
-                        print(f"[ERROR] Cannot open NetCDF file: {e}")
-                        return
+                        logger.error(f"[ERROR] Cannot open NetCDF file: {e}")
+                        return results
 
             # Continue with normal raster opening
             with rasterio.open(path) as ds:
                 H, W = ds.height, ds.width
-                print(f"[DATA] Raster loaded: {os.path.basename(paths[0])} ({W}×{H})")
+                logger.info(f"[DATA] Raster loaded: {os.path.basename(paths[0])} ({W}×{H})")
                 band_count = ds.count
                 
                 # Auto-detect nodata from file metadata
@@ -907,16 +944,16 @@ def render_raster(paths: list[str], args) -> None:
                         resampling=rasterio.enums.Resampling.bilinear
                     )
 
-                    print(f"[VIEW] Downsampled for preview → {out_w}×{out_h}px (scale={scale:.3f})")
+                    logger.info(f"[VIEW] Downsampled for preview → {out_w}×{out_h}px (scale={scale:.3f})")
                 else:
                     data = ds.read()
 
             # Print band/slice count for all multi-band files
             if band_count > 1:
                 if paths[0].lower().endswith('.nc'):
-                    print(f"[INFO] {band_count} slices detected")
+                    logger.info(f"[INFO] {band_count} slices detected")
                 else:
-                    print(f"[INFO] Multi-band raster detected ({band_count} bands)")
+                    logger.info(f"[INFO] Multi-band raster detected ({band_count} bands)")
 
             # MULTI BAND RGB (skip for NetCDF - treat as slices/timesteps, not RGB)
             # if band_count >= 3 and not paths[0].lower().endswith('.nc'):
@@ -930,9 +967,9 @@ def render_raster(paths: list[str], args) -> None:
                         rgb_idx = [b - 1 for b in args.rgb]
                         if len(rgb_idx) != 3:
                             raise ValueError
-                        print(f"[INFO] Using RGB bands: {args.rgb}")
+                        logger.info(f"[INFO] Using RGB bands: {args.rgb}")
                     except Exception:
-                        print("[WARN] Invalid --rgb. Using default 1 2 3")
+                        logger.warning("[WARN] Invalid --rgb. Using default 1 2 3")
                         rgb_idx = [0, 1, 2]
                 else:
                     rgb_idx = [0, 1, 2]
@@ -954,7 +991,7 @@ def render_raster(paths: list[str], args) -> None:
 
                 band_num = args.band if args.band is not None else 1
                 band_idx = max(0, min(band_num - 1, band_count - 1))
-                # print(f"[INFO] Displaying band {band_idx + 1} of {band_count}")
+                # logger.info(f"[INFO] Displaying band {band_idx + 1} of {band_count}")
                 raw_band = data[band_idx].astype(float)
 
                 # mask nodata
@@ -968,14 +1005,14 @@ def render_raster(paths: list[str], args) -> None:
                     max_val = np.nanmax(raw_band)
 
                     if paths[0].lower().endswith('.nc'):
-                        print(f"[DATA] Slice {band_idx + 1} of {band_count} — value range: {min_val:.3f} → {max_val:.3f}")
+                        logger.info(f"[DATA] Slice {band_idx + 1} of {band_count} — value range: {min_val:.3f} → {max_val:.3f}")
                         if band_count > 1:
-                            print(f"[INFO] Use --band <N> to display a different slice")
+                            logger.info(f"[INFO] Use --band <N> to display a different slice")
                     else:
-                        print(f"[DATA] Band {band_idx + 1} of {band_count} — value range: {min_val:.3f} → {max_val:.3f}")
+                        logger.info(f"[DATA] Band {band_idx + 1} of {band_count} — value range: {min_val:.3f} → {max_val:.3f}")
                                         
                 else:
-                    print("[WARN] No valid pixels found.")
+                    logger.warning("[WARN] No valid pixels found.")
 
                 band = normalize_to_uint8(
                     raw_band,
@@ -988,10 +1025,10 @@ def render_raster(paths: list[str], args) -> None:
                     cmap = colormaps[args.colormap]
                     colored = cmap(band / 255.0)
                     img = (colored[:, :, :3] * 255).astype(np.uint8)
-                    print(f"[INFO] Applying colormap: {args.colormap}")
+                    logger.info(f"[INFO] Applying colormap: {args.colormap}")
                 else:
                     img = np.stack([band] * 3, axis=-1)
-                    print("[INFO] Displaying grayscale")
+                    logger.info("[INFO] Displaying grayscale")
 
         elif len(paths) == 3:
             bands = []
@@ -1000,43 +1037,147 @@ def render_raster(paths: list[str], args) -> None:
                     bands.append(ds.read(1))
             shapes = {b.shape for b in bands}
             if len(shapes) != 1:
-                print("[ERROR] Raster sizes do not match.")
+                logger.error("[ERROR] Raster sizes do not match.")
                 return
             data = np.stack(bands, axis=0)
             H, W = data.shape[1:]
-            print(f"[DATA] RGB raster stack loaded: {W}×{H}")
+            logger.info(f"[DATA] RGB raster stack loaded: {W}×{H}")
             img = np.stack([normalize_to_uint8(b) for b in data], axis=-1)
-            print("[INFO] Displaying 3-band RGB composite")
+            logger.info("[INFO] Displaying 3-band RGB composite")
 
         else:
-            print("[ERROR] Provide one raster or exactly three rasters for RGB.")
-            return
+            logger.error("[ERROR] Provide one raster or exactly three rasters for RGB.")
+            return results
 
         # Resize for terminal
         H, W = img.shape[:2]
         if args.display:
             new_w, new_h = max(1, int(W * args.display)), max(1, int(H * args.display))
             img = np.array(Image.fromarray(img).resize((new_w, new_h), Image.BILINEAR))
-            print(f"[VIEW] Manual resize ×{args.display:.2f} → {new_w}×{new_h}px")
+            logger.info(f"[VIEW] Manual resize ×{args.display:.2f} → {new_w}×{new_h}px")
         else:
             img, scale = resize_to_terminal(img)
-            print(f"[VIEW] Rendered image size → {img.shape[1]}×{img.shape[0]}px (size={scale:.2f})")
-
+            logger.info(f"[VIEW] Rendered image size → {img.shape[1]}×{img.shape[0]}px (size={scale:.2f})")
         # Use unified display
+        results.append(img)
         show_image_auto(img, getattr(args, "display", None), is_vector=False)
 
     except Exception as e:
         if paths[0].lower().endswith('.nc'):
-            print(f"[ERROR] Cannot display this variable.")
-            print("[INFO] viewinline only supports 2D or 3D NetCDF variables")
+            logger.error(f"[ERROR] Cannot display this variable.")
+            logger.info("[INFO] viewinline only supports 2D or 3D NetCDF variables")
         else:
-            print(f"[ERROR] Inline render failed: {e}")
+            logger.error(f"[ERROR] Inline render failed: {e}")
+    finally:
+        return results
 
+class GalleryCurator:
+    def __init__(self, thumb_size=(128, 128), label_mode: str = "name"):
+        """A utility class to create thumbnails and labels for a gallery view.
+        This class mainly just groups together some logic to make the code more organized.
+        
+        Args:
+            thumb_size: max size for thumbnails (width, height)
+            label_mode: "name" (filename only), "path" (full path), or "none"
+        """
+        self.thumb_size = thumb_size
+        self.label_mode = label_mode
 
-def render_gallery(folder: str, grid: str = "4x4", display_scale=None, is_vector=False) -> None:
+    def make_blank_thumbnail(self, f, rgb=(200, 200, 200), text='no preview') -> Image.Image:
+        """Render a blank thumbnail with filename"""
+        img = Image.new("RGB", self.thumb_size, rgb)
+        draw = ImageDraw.Draw(img)
+        try:
+            font = ImageFont.load_default()
+            ext = os.path.splitext(os.path.basename(f))[-1].lower()
+            text = f"*{ext}\n{text}"
+            text_w, text_h = draw.textbbox((0,0), text, font=font)[2:]
+            text_x = (self.thumb_size[0] - text_w) / 2
+            text_y = (self.thumb_size[1] - text_h) / 2
+            draw.text((text_x, text_y), text, fill=(0, 0, 0), font=font)
+        except Exception as e:
+            pass
+        img.thumbnail(self.thumb_size)
+        return img
+
+    def make_blank_thumbnail_and_label(self, f: str) -> tuple[Image.Image, str]:
+        thumbnail = self.make_blank_thumbnail(f)
+        label = self.make_label(f, format="muted")
+        return thumbnail, label
+
+    def make_error_thumbnail(self, f: str, e: Exception) -> Image.Image:
+        return self.make_blank_thumbnail(f, rgb=(255, 235, 233), text=type(e).__name__)
+    
+    def make_plain_thumbnail(self, f: str) -> Image.Image:
+        thumbnail = Image.open(f).convert("RGB")
+        thumbnail.thumbnail(self.thumb_size)
+        return thumbnail
+
+    def make_tiff_thumbnail(self, f: str) -> Image.Image:
+        """Render a thumbnail for a TIFF file, using rasterio to read and PIL to create the thumbnail."""
+        import rasterio
+        with rasterio.open(f) as ds:
+            arr = ds.read()
+            if arr.shape[0] >= 3:
+                rgb = np.stack([normalize_to_uint8(arr[i]) for i in range(3)], axis=-1)
+            else:
+                band = normalize_to_uint8(arr[0])
+                rgb = np.stack([band]*3, axis=-1)
+            img = Image.fromarray(rgb)
+            img.thumbnail(self.thumb_size)
+            return img
+
+    def make_array_thumbnail(self, arr: np.ndarray) -> Image.Image:
+        """Render a thumbnail from an RGB array."""
+        img = Image.fromarray(arr)
+        img.thumbnail(self.thumb_size)
+        return img
+    
+    def make_label(self, f: str, index: int | None = None, format=None) -> str:
+        """Create a label for a file, optionally including an index for subdatasets/slices.
+        Args:
+            f: file path
+            index: optional index for subdatasets/slices
+            format: optional format for the label, e.g. "muted" for dimmer, "bold" for bolder text.
+        """
+        label = None
+        if self.label_mode == "name":
+            label = os.path.basename(f)
+        elif self.label_mode == "path":
+            label = f
+        else:
+            pass
+        
+        if label is not None and os.path.isdir(f):
+            label = f"{label}{os.path.sep}"
+            label = f"\033[7m{label}\033[0m" # make directory labels reversed to distinguish them visually
+        
+        if label is not None:
+            
+            if index is not None:
+                label = f"{label}[{index}]"
+        
+            if format == "muted":
+                label = f"\033[90m{label}\033[0m"
+            elif format == "bold":
+                label = f"\033[1m{label}\033[0m"
+            else:
+                pass
+        
+        return label
+
+def render_gallery(folder: str, args, is_vector=False) -> None:
     """Render a folder of rasters/images as small thumbnails in a grid."""
+    include = args.include
+    exclude = args.exclude
+    grid = getattr(args, "gallery", "4x4")
+    display_scale = args.display
+    thumb_size = getattr(args, "thumb_size", (128, 128))
+    keep_unsupported = getattr(args, "gallery_keep_unsupported", False)
+    curator = GalleryCurator(thumb_size=thumb_size, label_mode=args.gallery_labels)
+    skip_n = args.gallery_skip
+    
     import math
-
     try:
         # Parse grid
         try:
@@ -1046,40 +1187,90 @@ def render_gallery(folder: str, grid: str = "4x4", display_scale=None, is_vector
         nmax = cols * rows
 
         # Collect files
-        exts = (".png", ".jpg", ".jpeg", ".tif", ".tiff")
-        files = [os.path.join(folder, f) for f in sorted(os.listdir(folder))
-                 if f.lower().endswith(exts)]
+        
+        files = [os.path.join(folder, f) for f in sorted(os.listdir(folder))]
         if not files:
-            print(f"[WARN] No image/raster files found in {folder}")
+            logger.warning(f"[WARN] No image/raster files found in {folder}")
             return
 
-        files = files[:nmax]
+        if include:
+            rex = re.compile(include)
+            files = [f for f in files if rex.search(f)]
+        if exclude:
+            rex = re.compile(exclude)
+            files = [f for f in files if not rex.search(f)]
+
+        if skip_n > 0:
+            files = files[skip_n:]
+        elif skip_n < 0:
+            files = files[:skip_n]
+        else:
+            pass
 
         # Load thumbnails
         thumbs = []
-        thumb_size = (128, 128)
+        labels = []
         for f in files:
+            if len(thumbs) >= nmax:
+                logger.info(f"[INFO] Gallery cannot render more than {nmax} images (adjust with --gallery).")
+                break
             try:
+                args_copy = copy.deepcopy(args) # to avoid mutating the original args
                 ext = os.path.splitext(f)[1].lower()
-                if ext in [".tif", ".tiff"]:
-                    import rasterio
-                    with rasterio.open(f) as ds:
-                        arr = ds.read()
-                        if arr.shape[0] >= 3:
-                            rgb = np.stack([normalize_to_uint8(arr[i]) for i in range(3)], axis=-1)
-                        else:
-                            band = normalize_to_uint8(arr[0])
-                            rgb = np.stack([band]*3, axis=-1)
-                        img = Image.fromarray(rgb)
+                if ext in _SUPPORTED_RASTER_EXTS:
+                    if ext in [".tif", ".tiff"]:
+                        thumb = curator.make_tiff_thumbnail(f)
+                        thumbs.append(thumb)
+                        labels.append(curator.make_label(f))
+                    elif ext in (".png", ".jpg", ".jpeg",):
+                        thumb = curator.make_plain_thumbnail(f)
+                        thumbs.append(thumb)
+                        labels.append(curator.make_label(f))
+                    elif ext in (".nc", ".hdf", ".hdf5", ".h5"):
+                        arrays = render_raster([f], args_copy)
+                        if not arrays:
+                            thumb, label = curator.make_blank_thumbnail_and_label(f)
+                            thumbs.append(thumb)
+                            labels.append(label)
+                            continue
+                        for arr_i, arr in enumerate(arrays):
+                            thumb = curator.make_array_thumbnail(arr)
+                            thumbs.append(thumb)
+                            label = curator.make_label(f, arr_i)
+                            labels.append(f"{label}")
+                    else:
+                        thumb, label = curator.make_blank_thumbnail_and_label(f)
+                        thumbs.append(thumb)
+                        labels.append(label)
+                elif ext in _SUPPORTED_VECTOR_EXTS:
+                    arrays = render_vector(f, args_copy)
+                    if not arrays:
+                        thumb, label = curator.make_blank_thumbnail_and_label(f)
+                        thumbs.append(thumb)
+                        labels.append(label)
+                        continue
+                    for arr_i, arr in enumerate(arrays):
+                        thumb = curator.make_array_thumbnail(arr)
+                        thumbs.append(thumb)
+                        label = curator.make_label(f, arr_i)
+                        labels.append(f"{label}")
                 else:
-                    img = Image.open(f).convert("RGB")
-                img.thumbnail(thumb_size)
-                thumbs.append(img)
+                    if keep_unsupported:
+                        thumb, label = curator.make_blank_thumbnail_and_label(f)
+                        thumbs.append(thumb)
+                        labels.append(label)
+                    else:
+                        logger.warning(f"[WARN] Skipped {f} (unsupported file type)")
+
             except Exception as e:
-                print(f"[WARN] Skipped {os.path.basename(f)} ({e})")
+                if keep_unsupported:
+                    thumb = curator.make_error_thumbnail(f, e)
+                    thumbs.append(thumb)
+                    labels.append(curator.make_label(f, format="muted"))
+                logger.warning(f"[WARN] Skipped {f} ({e})")
 
         if not thumbs:
-            print("[WARN] No valid images loaded.")
+            logger.warning("[WARN] No valid images loaded.")
             return
 
         # Create grid canvas
@@ -1089,32 +1280,37 @@ def render_gallery(folder: str, grid: str = "4x4", display_scale=None, is_vector
         w, h = thumb_size
         margin = 8
         canvas_w = cols * w + (cols + 1) * margin
-        canvas_h = rows * h + (rows + 1) * margin
-        canvas = Image.new("RGB", (canvas_w, canvas_h), (220, 220, 220))
-
-        for i, img in enumerate(thumbs):
-            r, c = divmod(i, cols)
-            x = margin + c * (w + margin)
-            y = margin + r * (h + margin)
-            canvas.paste(img, (x, y))
-
-        print(f"[INFO] Displaying {n} images ({cols}×{rows} grid)")
-        show_image_auto(np.array(canvas), display_scale, is_vector)
+        canvas_h = h + margin
+        logger.info(f"[INFO] Displaying {n} images ({cols}×{rows} grid)")
+        for row_index in range(rows):
+            canvas = Image.new("RGB", (canvas_w, canvas_h), (220, 220, 220))
+            row_thumbs = thumbs[row_index * cols:(row_index + 1) * cols]
+            row_labels = labels[row_index * cols:(row_index + 1) * cols]
+            if any((True if label is not None else False for label in row_labels)):
+                logger.info("[INFO] " + " | ".join(row_labels))
+            for i, img in enumerate(row_thumbs):
+                r, c = divmod(i, cols)
+                x = margin + c * (w + margin)
+                y = margin #+ r * (h + margin)
+                canvas.paste(img, (x, y))
+            quiet(show_image_auto)(np.array(canvas), display_scale, is_vector)
 
     except Exception as e:
-        print(f"[ERROR] Failed to render gallery: {e}")
+        logger.error(f"[ERROR] Failed to render gallery: {e}")
 
 # ---------------------------------------------------------------------
 # Vector handling
 # ---------------------------------------------------------------------
-def render_vector(path, args):
+def render_vector(path, args) -> list[np.ndarray]:
+    results = []
     try:
         import geopandas as gpd
         import matplotlib.pyplot as plt
         from pyogrio import list_layers
     except ImportError as e:
-        print("[ERROR] Missing dependency. Install with:")
-        print("  pip install geopandas matplotlib pyogrio")
+        logger.error((
+            "[ERROR] Missing dependency. Install with:\n"
+            "  pip install geopandas matplotlib pyogrio"))
         return
 
     try:
@@ -1124,16 +1320,17 @@ def render_vector(path, args):
         else:
             layers = list_layers(path)
         if len(layers) > 1 and not getattr(args, "layer", None):
-            print(f"[INFO] Multiple layers found in '{os.path.basename(path)}':")
+            logger.info(f"[INFO] Multiple layers found in '{os.path.basename(path)}':")
             for i, lyr in enumerate(layers, 1):
                 name = lyr[0]
                 geom = lyr[1] if len(lyr) > 1 and lyr[1] else "Unknown"
-                print(f"   {i}. {name} ({geom})")
+                logger.info(f"   {i}. {name} ({geom})")
             first = layers[0][0]
-            print(f"[INFO] Defaulting to first layer: '{first}' (use --layer <name> to select another).")
+            logger.info(f"[INFO] Defaulting to first layer: '{first}' (use --layer <name> to select another).")
             args.layer = first
     except Exception as e:
-        print(f"[WARN] Could not list layers: {e}")
+        logger.warning(f"[WARN] Could not list layers: {e}")
+        return results
 
     try:
         # Use read_parquet for parquet/geoparquet files
@@ -1141,13 +1338,13 @@ def render_vector(path, args):
             gdf = gpd.read_parquet(path)
         else:
             gdf = gpd.read_file(path, layer=getattr(args, "layer", None))
-        print(f"[DATA] Vector loaded: {os.path.basename(path)} ({len(gdf)} features)")
+        logger.info(f"[DATA] Vector loaded: {os.path.basename(path)} ({len(gdf)} features)")
     except ImportError:
-        print("[ERROR] Parquet/GeoParquet support requires pyarrow. Install with: pip install pyarrow")
-        return
+        logger.error("[ERROR] Parquet/GeoParquet support requires pyarrow. Install with: pip install pyarrow")
+        return results
     except Exception as e:
-        print(f"[ERROR] Failed to read vector: {e}")
-        return
+        logger.error(f"[ERROR] Failed to read vector: {e}")
+        return results
         
     # Detect non-geometry columns
     all_cols = [c for c in gdf.columns if c != gdf.geometry.name]
@@ -1155,10 +1352,10 @@ def render_vector(path, args):
     if all_cols:
         n = len(all_cols)
         if not args.color_by:  # Only show columns if user didn't specify one
-            print(f"[INFO] Available columns ({n}):")
+            logger.info(f"[INFO] Available columns ({n}):")
             if n <= 20:
                 for c in all_cols:
-                    print(f"  {c}")
+                    logger.info(f"  {c}")
             else:
                 ncols = 2 if n <= 30 else 3 if n <= 100 else 4
                 nrows = (n + ncols - 1) // ncols
@@ -1168,10 +1365,10 @@ def render_vector(path, args):
                     row = ""
                     for j in range(ncols):
                         row += padded[i + j * nrows].ljust(col_width)
-                    print("  " + row.rstrip())
-            print("[INFO] Showing border-only view (use --color-by <column> to color features).")
+                    logger.info("  " + row.rstrip())
+            logger.info("[INFO] Showing border-only view (use --color-by <column> to color features).")
     else:
-        print("[INFO] No attribute columns found.")
+        logger.info("[INFO] No attribute columns found.")
         
     # Figure setup
     fig, ax = plt.subplots(figsize=(6, 6), dpi=150, facecolor="gray")
@@ -1182,12 +1379,12 @@ def render_vector(path, args):
     column = args.color_by if args.color_by in gdf.columns else None
 
     if args.color_by and args.color_by not in gdf.columns:
-        print(f"[WARN] Column '{args.color_by}' not found. Showing border-only view.")
+        logger.warning(f"[WARN] Column '{args.color_by}' not found. Showing border-only view.")
         column = None
 
     if column and args.colormap is None:
         args.colormap = "terrain"
-        print("[INFO] Applying default colormap: terrain")
+        logger.info("[INFO] Applying default colormap: terrain")
 
     cmap = colormaps.get(args.colormap) if args.colormap else None
 
@@ -1197,7 +1394,7 @@ def render_vector(path, args):
             # NUMERIC COLUMN
             if np.issubdtype(gdf[column].dtype, np.number):
                 vmin, vmax = np.percentile(gdf[column].dropna(), (2, 98))
-                print(f"[INFO] Coloring by numeric column '{column}' (range: {vmin:.2f}–{vmax:.2f})")
+                logger.info(f"[INFO] Coloring by numeric column '{column}' (range: {vmin:.2f}–{vmax:.2f})")
 
                 norm = mpl.colors.Normalize(vmin=vmin, vmax=vmax)
                 cmap = colormaps.get(args.colormap or "terrain")
@@ -1227,7 +1424,7 @@ def render_vector(path, args):
             # CATEGORICAL COLUMN
             else:
                 categories = gdf[column].dropna().unique()
-                print(f"[INFO] Coloring by categorical column '{column}' ({len(categories)} classes)")
+                logger.info(f"[INFO] Coloring by categorical column '{column}' ({len(categories)} classes)")
 
                 cmap = colormaps.get(args.colormap or "tab10")
                 colors = [cmap(i / max(1, len(categories) - 1))
@@ -1256,7 +1453,7 @@ def render_vector(path, args):
             )
 
     except Exception as e:
-        print(f"[WARN] Plotting failed ({e}) — fallback to border-only.")
+        logger.warning(f"[WARN] Plotting failed ({e}) — fallback to border-only.")
         gdf.plot(ax=ax, facecolor="none", edgecolor="gray", linewidth=0.5)
 
     # Save to buffer
@@ -1275,13 +1472,16 @@ def render_vector(path, args):
         new_w = max(1, int(img.shape[1] * scale))
         new_h = max(1, int(img.shape[0] * scale))
         img = np.array(Image.fromarray(img).resize((new_w, new_h), Image.BILINEAR))
-        print(f"[VIEW] Manual resize ×{scale:.2f} → {new_w}×{new_h}px")
+        logger.info(f"[VIEW] Manual resize ×{scale:.2f} → {new_w}×{new_h}px")
     else:
         img, scale = resize_to_terminal(img)
-        print(f"[VIEW] Rendered image size → {img.shape[1]}×{img.shape[0]}px (size={scale:.2f})")
+        logger.info(f"[VIEW] Rendered image size → {img.shape[1]}×{img.shape[0]}px (size={scale:.2f})")
 
     # Use unified display
+    results.append(img)
     show_image_auto(img, getattr(args, "display", None), is_vector=True)
+
+    return results
 
 # ---------------------------------------------------------------------
 # Smart help formatter
@@ -1303,17 +1503,17 @@ class SmartDefaults(argparse.ArgumentDefaultsHelpFormatter):
 def handle_tabular_data(df: pd.DataFrame, args, filepath: str) -> None:
     """Handle CSV/parquet/vector-as-table with all tabular operations."""
     if args.sql and (args.where or args.sort or args.limit or args.select):
-        print("[ERROR] --sql cannot be combined with --where/--sort/--limit/--select.")
+        logger.error("[ERROR] --sql cannot be combined with --where/--sort/--limit/--select.")
         sys.exit(1)
 
     if args.sql:
         try:
             import duckdb
         except ImportError:
-            print("[ERROR] --sql requires DuckDB. Install with: pip install duckdb")
+            logger.error("[ERROR] --sql requires DuckDB. Install with: pip install duckdb")
             sys.exit(1)
 
-        print("[INFO] Executing SQL query...")
+        logger.info("[INFO] Executing SQL query...")
 
         try:
             query = args.sql.replace("data", f"read_csv_auto('{filepath}')")
@@ -1321,11 +1521,11 @@ def handle_tabular_data(df: pd.DataFrame, args, filepath: str) -> None:
             df = con.execute(query).df()
             con.close()
         except Exception as e:
-            print(f"[ERROR] DuckDB SQL failed: {e}")
+            logger.error(f"[ERROR] DuckDB SQL failed: {e}")
             sys.exit(1)
 
         if df.empty:
-            print("[WARN] Query returned no rows.")
+            logger.warning("[WARN] Query returned no rows.")
             return
 
         if args.describe:
@@ -1356,31 +1556,31 @@ def handle_tabular_data(df: pd.DataFrame, args, filepath: str) -> None:
         try:
             import duckdb
         except ImportError:
-            print("[ERROR] Filtering requires DuckDB. Install with: pip install duckdb")
+            logger.error("[ERROR] Filtering requires DuckDB. Install with: pip install duckdb")
             sys.exit(1)
 
-        print("[INFO] Building query...")
+        logger.info("[INFO] Building query...")
 
         base_query = "SELECT * FROM df"
 
         if args.select:
             selected = ", ".join(args.select)
-            print(f"[INFO] Selecting columns: {selected}")
+            logger.info(f"[INFO] Selecting columns: {selected}")
             base_query = f"SELECT {selected} FROM df"
 
         clauses = []
 
         if args.where:
-            print(f"[INFO] Applying filter: {args.where}")
+            logger.info(f"[INFO] Applying filter: {args.where}")
             clauses.append(f"WHERE {args.where}")
 
         if args.sort:
             direction = "DESC" if args.desc else "ASC"
-            print(f"[INFO] Sorting by: {args.sort} ({direction})")
+            logger.info(f"[INFO] Sorting by: {args.sort} ({direction})")
             clauses.append(f"ORDER BY {args.sort} {direction}")
 
         if args.limit:
-            print(f"[INFO] Limiting rows: {args.limit}")
+            logger.info(f"[INFO] Limiting rows: {args.limit}")
             clauses.append(f"LIMIT {args.limit}")
 
         query = " ".join([base_query] + clauses)
@@ -1388,32 +1588,32 @@ def handle_tabular_data(df: pd.DataFrame, args, filepath: str) -> None:
         try:
             df = duckdb.query(query).to_df()
         except Exception as e:
-            print(f"[ERROR] DuckDB query failed: {e}")
+            logger.error(f"[ERROR] DuckDB query failed: {e}")
             sys.exit(1)
 
         if df.empty:
-            print("[WARN] Query returned no rows.")
+            logger.warning("[WARN] Query returned no rows.")
             return
 
     if args.unique:
         col = args.unique
 
         if col not in df.columns:
-            print(f"[ERROR] Column '{col}' not found.")
+            logger.error(f"[ERROR] Column '{col}' not found.")
             return
 
         vals = sorted(df[col].dropna().astype(str).unique())
         n = len(vals)
 
-        print(f"[DATA] Unique values in '{col}' ({n}):")
+        logger.info(f"[DATA] Unique values in '{col}' ({n}):")
 
         if n == 0:
-            print("  (none)")
+            logger.info("  (none)")
             return
 
         if n <= 10:
             for v in vals:
-                print(f"  {v}")
+                logger.info(f"  {v}")
         else:
             ncols = 2 if n <= 30 else 3 if n <= 100 else 4
             nrows = (n + ncols - 1) // ncols
@@ -1424,7 +1624,7 @@ def handle_tabular_data(df: pd.DataFrame, args, filepath: str) -> None:
                 row = ""
                 for j in range(ncols):
                     row += vals[i + j * nrows].ljust(col_width)
-                print("  " + row.rstrip())
+                logger.info("  " + row.rstrip())
 
             return
     
@@ -1509,9 +1709,34 @@ def main() -> None:
         help="Override nodata value for rasters if dataset metadata is missing or incorrect."
     )
     parser.add_argument(
-    "--gallery", nargs="?", const="4x4", metavar="GRID",
-    help="Display all PNG/JPG/TIF images in a folder as thumbnails (e.g., 5x5 grid)."
-)
+        "--gallery", nargs="?", const="4x4", metavar="GRID",
+        help="Display all PNG/JPG/TIF images in a folder as thumbnails (e.g., 5x5 grid)."
+    )
+
+    parser.add_argument(
+        "--gallery-labels", choices=["none", "name", "path"], default="name",
+        help="How to display labels in the gallery view: 'none' for no labels, 'name' for file names, 'path' for full paths."
+    )
+
+    parser.add_argument(
+        "--gallery-keep-unsupported", action="store_true", default=False,
+        help="In gallery mode, list unsupported files with a placeholder image instead of skipping them."
+    )
+
+    parser.add_argument(
+        "--gallery-skip", type=int, default=0,
+        help=(
+            "Number of files to skip before starting the gallery. "
+            "Applied after any other filters. "
+            "Allows for paging through a large number of images in a folder "
+            "(e.g. --gallery 4x4 --gallery-skip 16 to see the next 'page' of 16 images after the first 16). "
+            "Note that number of files in the folder may not match number of images in the gallery "
+            "(e.g. NetCDF variables with multiple slices or multi-layer vector files that may result in multiple images per file). "
+            "Negative values will skip from the end instead of the beginning "
+            "(e.g. --gallery-skip -16 to show only the last 16 images in a folder)."
+            )
+    )
+
     parser.add_argument(
         "--subset", type=int, default=None,
         help="Variable index for NetCDF files (e.g. --subset 1)."
@@ -1605,9 +1830,32 @@ def main() -> None:
     help="Display vector/parquet file as tabular data instead of rendering geometry."
     ) 
 
+    parser.add_argument(
+        "--include", type=str, default=None,
+        help="For batch modes (e.g. gallery), only include files matching this Python regex pattern. Applied before the exclude pattern. (e.g. --include \"^2023.*\\\\.tif$\")"
+    )
+
+    parser.add_argument(
+        "--exclude", type=str, default=None,
+        help="For batch modes (e.g. gallery), exclude files matching this Python regex pattern. Applied after the include pattern. (e.g. --exclude \"^2022.*\\\\.tif$\")"
+    )
+
+    parser.add_argument(
+        "--loglevel", choices=["DEBUG", "INFO", "WARN", "WARNING", "ERROR"], default="INFO",
+        help="Set logging level (default: INFO), (e.g. --loglevel ERROR)."
+    )
+
+    parser.add_argument(
+        "--thumb-size", type=int, nargs=2, metavar=('WIDTH', 'HEIGHT'), default=(128, 128),
+        help="Thumbnail size for gallery mode (e.g. --thumb-size 100 100)."
+    )
+
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
 
     args = parser.parse_args()
+
+    # Set logging level
+    logger.setLevel(getattr(logging, args.loglevel))
 
     # Handle --rgbfiles flag (takes precedence)
     if args.rgbfiles:
@@ -1625,20 +1873,17 @@ def main() -> None:
     for bad in ("color-by", "edgecolor", "colormap", "band", "display"):
         for a in args.paths:
             if a == bad:
-                print(f"[ERROR] Missing '--' before '{bad}'.")
-                print("        Example:  --color-by column_name")
+                logger.error((
+                    f"[ERROR] Missing '--' before '{bad}'.\n"
+                    "        Example:  --color-by column_name"))
                 sys.exit(1)
 
     paths = args.paths
 
-    # File routing
-    raster_exts = (".png", ".jpg", ".jpeg", ".tif", ".tiff", ".nc", ".hdf", ".hdf5", ".h5")
-    vector_exts = (".shp", ".geojson", ".json", ".gpkg", ".parquet", "geoparquet")
-
     if len(paths) == 1:
         p = paths[0].lower()
 
-        if p.endswith(raster_exts):
+        if p.endswith(_SUPPORTED_RASTER_EXTS):
             # For PNG/JPG, try PIL first (avoids rasterio geotransform warning)
             # Fall back to rasterio for georeferenced files
             if p.endswith(('.png', '.jpg', '.jpeg')):
@@ -1650,7 +1895,7 @@ def main() -> None:
             render_raster(paths, args)
             return
 
-        elif p.endswith(vector_exts):
+        elif p.endswith(_SUPPORTED_VECTOR_EXTS):
             if args.table:
                 # Treat as tabular data
                 try:
@@ -1663,14 +1908,14 @@ def main() -> None:
                     handle_tabular_data(df, args, paths[0])
                     return
                 except Exception as e:
-                    print(f"[ERROR] Failed to read file: {e}")
+                    logger.error(f"[ERROR] Failed to read file: {e}")
                     sys.exit(1)
             else:
                 render_vector(paths[0], args)
                 return
 
         if os.path.isdir(paths[0]) and args.gallery:
-            render_gallery(paths[0], grid=args.gallery, display_scale=args.display, is_vector=False)
+            render_gallery(paths[0], args, is_vector=False)
             return
 
         elif p.endswith((".csv", ".parquet")):
@@ -1692,24 +1937,24 @@ def main() -> None:
                 else:
                     df = pd.read_csv(paths[0])
             except ImportError:
-                print("[ERROR] Parquet support requires pyarrow. Install with: pip install pyarrow")
+                logger.error("[ERROR] Parquet support requires pyarrow. Install with: pip install pyarrow")
                 sys.exit(1)
             except Exception as e:
-                print(f"[ERROR] Failed to read file: {e}")
+                logger.error(f"[ERROR] Failed to read file: {e}")
                 sys.exit(1)
             
             handle_tabular_data(df, args, paths[0])
             return
 
         else:
-            print("[ERROR] Unsupported file type.")
+            logger.error("[ERROR] Unsupported file type.")
             sys.exit(1)
 
-    elif len(paths) == 3 and all(p.lower().endswith(raster_exts) for p in paths):
+    elif len(paths) == 3 and all(p.lower().endswith(_SUPPORTED_RASTER_EXTS) for p in paths):
         render_raster(paths, args)
 
     else:
-        print("[ERROR] Provide one raster/vector file or three rasters for RGB.")
+        logger.error("[ERROR] Provide one raster/vector file or three rasters for RGB.")
         sys.exit(1)
 
 
