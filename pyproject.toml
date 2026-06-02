@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "viewinline"
-version = "0.3.0"
+version = "0.3.1"
 description = "Quick look geospatial viewer for the terminal, with inline image previews"
 readme = "README.md"
 license = { text = "Apache-2.0" }

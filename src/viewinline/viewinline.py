@@ -40,7 +40,7 @@ warnings.filterwarnings("ignore", message="More than one layer found", category=
 warnings.filterwarnings("ignore", message="Dataset has no geotransform", category=UserWarning)
 warnings.filterwarnings("ignore", message="invalid scale_factor or add_offset attribute", category=UserWarning)
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 AVAILABLE_COLORMAPS = [
     "viridis", "inferno", "magma", "plasma",
@@ -247,6 +247,24 @@ def resize_to_terminal(img: np.ndarray) -> tuple[np.ndarray, float]:
     pil_img = Image.fromarray(img)
     pil_img = ImageOps.contain(pil_img, (new_w, new_h))
     return np.array(pil_img), scale
+
+def parse_bands(s: str) -> list[int]:
+    """Parse --bands argument: accepts ranges (30-40), lists (3,4,5), or mixed (1,3,10-15)."""
+    bands = []
+    for part in s.split(","):
+        part = part.strip()
+        if "-" in part:
+            try:
+                start, end = map(int, part.split("-", 1))
+                bands.extend(range(start, end + 1))
+            except ValueError:
+                print(f"[WARN] Could not parse band range: {part}")
+        else:
+            try:
+                bands.append(int(part))
+            except ValueError:
+                print(f"[WARN] Could not parse band: {part}")
+    return sorted(set(bands))
 
 # ---------------------------------------------------------------------
 # CSV handling
@@ -737,6 +755,28 @@ def render_netcdf_via_netcdf4(path, args):
         band_count = var.shape[spectral_axis]
         band_num = args.band if args.band is not None else 1
         band_idx = max(0, min(band_num - 1, band_count - 1))
+
+        # BANDS GALLERY for NetCDF
+        if getattr(args, "bands", None):
+            band_list = parse_bands(args.bands)
+            print(f"[DEBUG] band_count={band_count}, band_list={band_list}")
+            valid_bands = [b for b in band_list if 1 <= b <= band_count]
+            if not valid_bands:
+                print(f"[ERROR] No valid bands. Variable has {band_count} bands along '{var.dimensions[spectral_axis]}'.")
+                nc.close()
+                return
+            slices = []
+            for b in valid_bands:
+                slicer = [slice(None)] * 3
+                slicer[spectral_axis] = b - 1
+                slices.append(np.asarray(var[tuple(slicer)], dtype=np.float64))
+            nc.close()
+            colormap = args.colormap if args.colormap else "viridis"
+            render_bands_gallery(np.stack(slices, axis=0), valid_bands, band_count,
+                                display_scale=getattr(args, "display", None),
+                                colormap=colormap)
+            return
+
         slicer = [slice(None)] * 3
         slicer[spectral_axis] = band_idx
         data = np.asarray(var[tuple(slicer)], dtype=np.float64)
@@ -793,9 +833,6 @@ def render_netcdf_via_netcdf4(path, args):
         new_w, new_h = max(1, int(W * args.display)), max(1, int(H * args.display))
         img = np.array(Image.fromarray(img).resize((new_w, new_h), Image.BILINEAR))
         print(f"[VIEW] Manual resize ×{args.display:.2f} → {new_w}×{new_h}px")
-    # else:
-    #     img, scale = resize_to_terminal(img)
-    #     print(f"[VIEW] Rendered image size → {img.shape[1]}×{img.shape[0]}px (size={scale:.2f})")
     else:
             max_dim = 2000
             if max(img.shape[:2]) > max_dim:
@@ -803,7 +840,7 @@ def render_netcdf_via_netcdf4(path, args):
                 new_w = int(img.shape[1] * scale)
                 new_h = int(img.shape[0] * scale)
                 img = np.array(Image.fromarray(img).resize((new_w, new_h), Image.BILINEAR))
-                print(f"[VIEW] Downsampled from {W}×{H}px to {new_w}×{new_h}px (scale={scale:.2f})")
+                print(f"[VIEW] Downsampled from {W}×{H}px to {new_w}×{new_h}px (display scale={scale:.2f})")
                 print(f"[INFO] Use --display 1 for full resolution.")
             else:
             # (matches the width_pct logic in show_inline_image)
@@ -907,7 +944,8 @@ def render_raster(paths: list[str], args) -> None:
                         resampling=rasterio.enums.Resampling.bilinear
                     )
 
-                    print(f"[VIEW] Downsampled for preview → {out_w}×{out_h}px (scale={scale:.3f})")
+                    print(f"[VIEW] Downsampled for preview → {out_w}×{out_h}px (display scale={scale:.3f})")
+                    print(f"[INFO] Use --display 1 for full resolution.")
                 else:
                     data = ds.read()
 
@@ -918,12 +956,18 @@ def render_raster(paths: list[str], args) -> None:
                 else:
                     print(f"[INFO] Multi-band raster detected ({band_count} bands)")
 
-            # MULTI BAND RGB (skip for NetCDF - treat as slices/timesteps, not RGB)
-            # if band_count >= 3 and not paths[0].lower().endswith('.nc'):
-            # Auto-composite to RGB only when user didn't explicitly ask for a single band
-            # user_specified_band = args.band is not None and args.band != 1
+            # BANDS GALLERY
+            if getattr(args, "bands", None):
+                band_list = parse_bands(args.bands)
+                colormap = args.colormap if args.colormap else "viridis"
+                render_bands_gallery(data, band_list, band_count,
+                                    grid=getattr(args, "gallery", None),
+                                    display_scale=getattr(args, "display", None),
+                                    colormap=colormap)
+                return
+
             user_specified_band = args.band is not None
-            if band_count >= 3 and not paths[0].lower().endswith('.nc') and not user_specified_band:
+            if band_count >= 3 and not paths[0].lower().endswith('.nc') and not user_specified_band and getattr(args, 'rgb', None):
 
                 if getattr(args, "rgb", None):
                     try:
@@ -1045,12 +1089,11 @@ def render_gallery(folder: str, grid: str = "4x4", display_scale=None, is_vector
             cols, rows = 4, 4
         nmax = cols * rows
 
-        # Collect files
-        exts = (".png", ".jpg", ".jpeg", ".tif", ".tiff")
+        # Collect all files, let the loader decide what's valid
         files = [os.path.join(folder, f) for f in sorted(os.listdir(folder))
-                 if f.lower().endswith(exts)]
+                 if os.path.isfile(os.path.join(folder, f))]
         if not files:
-            print(f"[WARN] No image/raster files found in {folder}")
+            print(f"[WARN] No files found in {folder}")
             return
 
         files = files[:nmax]
@@ -1063,8 +1106,12 @@ def render_gallery(folder: str, grid: str = "4x4", display_scale=None, is_vector
                 ext = os.path.splitext(f)[1].lower()
                 if ext in [".tif", ".tiff"]:
                     import rasterio
+                    from rasterio.enums import Resampling
                     with rasterio.open(f) as ds:
-                        arr = ds.read()
+                        arr = ds.read(
+                            out_shape=(ds.count, thumb_size[1], thumb_size[0]),
+                            resampling=Resampling.nearest
+                        )
                         if arr.shape[0] >= 3:
                             rgb = np.stack([normalize_to_uint8(arr[i]) for i in range(3)], axis=-1)
                         else:
@@ -1075,8 +1122,9 @@ def render_gallery(folder: str, grid: str = "4x4", display_scale=None, is_vector
                     img = Image.open(f).convert("RGB")
                 img.thumbnail(thumb_size)
                 thumbs.append(img)
+
             except Exception as e:
-                print(f"[WARN] Skipped {os.path.basename(f)} ({e})")
+                print(f"[SKIP] {os.path.basename(f)} — {e}")
 
         if not thumbs:
             print("[WARN] No valid images loaded.")
@@ -1103,6 +1151,87 @@ def render_gallery(folder: str, grid: str = "4x4", display_scale=None, is_vector
 
     except Exception as e:
         print(f"[ERROR] Failed to render gallery: {e}")
+
+def render_bands_gallery(data: np.ndarray, band_list: list[int], band_count: int,
+                          grid: str = None, display_scale=None, colormap: str = "viridis") -> None:
+    """Render multiple bands from a single raster as a grid of thumbnails."""
+    import math
+    from PIL import ImageDraw
+
+    # Validate bands
+    valid_bands = [b for b in band_list if 1 <= b <= band_count]
+    if not valid_bands:
+        print(f"[ERROR] No valid bands. File has {band_count} bands.")
+        return
+    skipped = set(band_list) - set(valid_bands)
+    if skipped:
+        print(f"[WARN] Skipped out-of-range bands: {sorted(skipped)}")
+
+    n = len(valid_bands)
+
+    # Auto grid or user-specified
+    if grid:
+        try:
+            cols, rows = map(int, grid.lower().split("x"))
+        except Exception:
+            cols = math.ceil(math.sqrt(n))
+            rows = math.ceil(n / cols)
+    else:
+        cols = math.ceil(math.sqrt(n))
+        rows = math.ceil(n / cols)
+
+    # Use fixed longest dimension to preserve aspect ratio
+    max_thumb = 256
+    label_height = 14  # space below each thumbnail for band label
+    margin = 8
+    cmap = colormaps[colormap]
+
+    thumbs = []
+    thumb_w = thumb_h = max_thumb  # will be updated from first image
+
+    for i, b in enumerate(valid_bands):
+        arr = data[i].astype(float)
+        normalized = normalize_to_uint8(arr)
+        colored = cmap(normalized / 255.0)
+        rgb = (colored[:, :, :3] * 255).astype(np.uint8)
+        img = Image.fromarray(rgb)
+        img.thumbnail((max_thumb, max_thumb), Image.LANCZOS)
+        if i == 0:
+            thumb_w, thumb_h = img.size
+        thumbs.append(img)
+
+    # Build canvas with extra height per row for labels
+    cols = min(cols, n)
+    rows = math.ceil(n / cols)
+    cell_w = thumb_w + margin
+    cell_h = thumb_h + label_height + margin
+    canvas_w = cols * cell_w + margin
+    canvas_h = rows * cell_h + margin
+    canvas = Image.new("RGB", (canvas_w, canvas_h), (220, 220, 220))
+    draw = ImageDraw.Draw(canvas)
+    from PIL import ImageFont
+    try:
+        font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 10)
+    except Exception:
+        try:
+            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 10)
+        except Exception:
+            font = ImageFont.load_default()
+
+    for i, img in enumerate(thumbs):
+        r, c = divmod(i, cols)
+        x = margin + c * cell_w
+        y = margin + r * cell_h
+        canvas.paste(img, (x, y))
+        # Draw label on canvas background below the thumbnail
+        label = f"B{valid_bands[i]}"
+        lx = x + (thumb_w - len(label) * 6) // 2
+        ly = y + thumb_h + 2
+        draw.text((lx, ly), label, fill=(0, 0, 0), font=font)
+
+    print(f"[INFO] Displaying {n} bands ({cols}×{rows} grid, colormap: {colormap})")
+    # print(f"[DEBUG] canvas size: {canvas_w}×{canvas_h}px")
+    show_image_auto(np.array(canvas), display_scale)
 
 # ---------------------------------------------------------------------
 # Vector handling
@@ -1520,6 +1649,11 @@ def main() -> None:
         "--reduce", dest="reduce_dim", type=str, default=None,
         metavar="DIM_NAME",
         help="For 3D NetCDF variables, specify which dimension to use as the band axis (auto-detected if omitted)."
+    )
+    parser.add_argument(
+        "--bands",
+        type=str,
+        help="Display multiple bands as a grid. Accepts ranges (30-40), lists (3,4,5), or mixed (1,3,10-15)."
     )
 
     # CSV options

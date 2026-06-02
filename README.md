@@ -31,9 +31,9 @@ pip install viewinline
 # Rasters
 viewinline path/to/file.tif
 viewinline R.tif G.tif B.tif                 # RGB composite (also works with --rgbfiles)
-viewinline hyperspectral.nc --band 50
 viewinline path/to/multiband.tif --rgb 3 2 1
-viewinline path/to/folder --gallery 4x3      # show image gallery (e.g. 4x3 grid)
+viewinline path/to/folder --gallery 4x3      # show image gallery of all files in the folder (e.g. 4x3 grid)
+viewinline path/to/hyperspectral.tif --bands 10-50 # show image gallery of selected bands (also works with --bands 11,15,30,45; --gallery 5x5)
 
 # NetCDF and HDF
 viewinline file.nc                           # list variables
@@ -41,6 +41,8 @@ viewinline file.nc --subset 2                # display variable 2
 viewinline file.nc --subset 1 --band 10      # variable 1, timestep 10 --band or --timestep
 viewinline temp.nc --subset 1 --colormap plasma --vmin 273 --vmax 310
 viewinline hyperspectral.nc --subset 1 --reduce NumberOfScanlines  # override auto-detected axis
+viewinline hyperspectral.nc --subset 22 --band 50 # show image gallery of selected bands
+viewinline hyperspectral.nc --subset 22 --bands 10-54 --gallery 5x11
 
 # Vectors
 viewinline path/to/vector.geojson
@@ -136,6 +138,7 @@ You can also force the chafa path on any terminal by setting `INLINE_VIEWER_ENGI
 
 **Gallery view**
 - Display all images in a folder with `--gallery 4x4`
+- Display selected bands of a single raster as a grid with `--bands 101-120` or `--bands 11,12,45,55`. Works with GeoTIFF and NetCDF files.
 
 **NetCDF/HDF notes:**
 - viewinline lists only variables that can be displayed as 2D or 3D arrays
@@ -180,6 +183,7 @@ General:
 
 Raster:
   --band BAND           Band number to display (single raster), or slice number for NetCDF. (default: 1)
+  --bands BANDS         Display multiple bands as a grid. Accepts ranges (30-40), lists (3,4,5), or mixed (1,5,10-15).
   --timestep INTEGER    Alias for --band when working with NetCDF files.
   --subset INTEGER      Variable index for NetCDF/HDF files (e.g., --subset 1).
   --reduce DIM_NAME     For 3D NetCDF variables, specify which dimension to use as the band/slider axis.  Auto-detected if omitted.
