@@ -12,7 +12,7 @@ Renders natively in iTerm2, WezTerm, Konsole, Rio, and Contour. Falls back to `c
 
 ## When to Use
 
-- **File browsing**: `find . -name "*.jpg" | xargs viewinline` to visually scan results
+- **File browsing**: `find . -name "*.jpg" | xargs -n1 viewinline` to visually scan results
 - **Gallery view**: `viewinline path/to/folder --gallery 4x3` to preview all images in a directory
 - **Band inspection**: Display specific bands of a raster as a grid: `--bands 10-50` or `--bands 11,15,30,45`
 - **Geospatial workflows**: Inspect raster/vector outputs after GDAL transformations
