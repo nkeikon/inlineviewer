@@ -133,6 +133,9 @@ viewinline data.csv --where "year > 2010" --sort population --desc
 
 # SQL query
 viewinline data.csv --sql "SELECT * FROM data WHERE area > 100 ORDER BY year"
+
+# Batch CSV inspection with xargs (use -I {} to control argument order)
+find . -name "*.csv" | xargs -n1 -I {} viewinline {} --describe
 ```
 
 ## Tips
