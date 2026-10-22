@@ -62,6 +62,7 @@ Note: `--info` and `--export` report what a file *is* and what it *looks like* �
 **Inspection (JSON output, no image):**
 - `--info` — print metadata + statistics as JSON, then exit (rasters and vectors; lists variables for NetCDF/HDF with `--subset N`)
 - `--export PATH` — save the rendered image to PATH (`.png`/`.jpg`); prints `{"path": "..."}`
+- `--grid [N]` — overlay axis ticks and a light grid (N divisions, default 5). Labels are in the file's CRS units for georeferenced rasters and vectors, pixel positions otherwise. Combine with `--export` to save a quick-look with readable coordinates, e.g. to check a file covers the expected area.
 
 **Raster Display:**
 - `--rgb R G B` — Specify band order for RGB (e.g., `--rgb 4 3 2`)

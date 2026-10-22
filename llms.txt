@@ -7,7 +7,7 @@
 - Command name: `viewinline`
 - Requires: Python 3.9+
 - License: Apache-2.0 © 2026 Keiko Nomura
-- Latest release: v0.4.0 (2026-06-06)
+- Latest release: v0.5.0 (2026-10-21)
 - Combines the core display logic of `viewtif` and `viewgeom`, but is **non-interactive**: no zoom/pan/colormap-switching on the fly. Everything is controlled via CLI options (e.g. `--display`, `--color-by`, `--colormap`).
 
 ## Installation
@@ -136,6 +136,8 @@ General:
 - `--display DISPLAY` — resize only the displayed image (0.5 = smaller, 2 = bigger). Default: auto-fit to terminal.
 - `--info` — print file metadata as JSON, then exit (no image drawn). Works with rasters (GeoTIFF, NetCDF, HDF) and vectors (GeoJSON, Shapefile, GeoPackage, GeoParquet). For NetCDF/HDF, lists variables; combine with `--subset N` to inspect one. Always returns JSON, including a `{"readable": false, "error": ...}` object on unreadable input. Aimed at AI coding agents.
 - `--export PATH` — save the rendered image to PATH (`.png`/`.jpg`, chosen by extension) and open it; prints `{"path": "..."}` as the final line. Works with any display flag (`--rgb`, `--colormap`, `--band`, `--display`), saving exactly what viewinline would render. Useful for saving quick-looks and for AI agents inspecting outputs visually.
+- `--grid [N]` — overlay axis ticks and a light grid (N divisions, default 5). Labels are in the file's CRS units (degrees or metres) for georeferenced rasters and vectors; pixel positions for PNG/JPG, NetCDF, and non-georeferenced files. Works with `--export`.
+
 Raster:
 - `--band BAND` — band number for a single raster, or slice number for NetCDF (default: 1).
 - `--bands BANDS` — display multiple bands as a grid. Accepts ranges (`30-40`), lists (`3,4,5`), or mixed (`1,5,10-15`).
@@ -236,6 +238,7 @@ Optional: `chafa` (terminal coverage; system binary), `duckdb` (filter/sort/SQL)
 - **v0.2.0 (2026-02-17):** Inline-only display (OSC 1337); removed ANSI fallback and /tmp save; DuckDB integration for `--where`/`--sort`/`--select`/`--limit`/`--sql`; license switched MIT → Apache-2.0.
 - **v0.1.5 (2026-02-13):** Fixed duplicate band-display prints; optimized uint8 normalization; minor perf.
 - **v0.4.0 (2026-08-23):** New agent-facing inspection commands: `--info` (file metadata + statistics as JSON, for rasters and vectors; lists variables for NetCDF/HDF with `--subset`; always returns JSON including structured errors) and `--export` (save the rendered image to PNG/JPEG, works with any display flag). Existing viewer behavior unchanged.
+- **v0.5.0 (2026-10-21):** New `--grid [N]` flag: axis ticks and a light grid overlay. Georeferenced rasters and vectors are labelled in real CRS coordinates; photos, NetCDF, and non-georeferenced files in pixel positions. Grid contributed by @luismanriqueruiz.
 
 ## Support & links
 

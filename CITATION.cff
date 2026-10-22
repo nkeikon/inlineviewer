@@ -11,26 +11,27 @@ type: software
 authors:
   - given-names: Keiko
     family-names: Nomura
-    # orcid: "https://orcid.org/0000-0000-0000-0000"   # optional: add if you have one
+    orcid: "https://orcid.org/0000-0002-5218-3414"   
   - given-names: Filip
     family-names: Kral
-    # orcid: "https://orcid.org/0000-0000-0000-0000"   # optional: add if you have one
+  - given-names: Luis
+    family-names: Manrique Ruiz
 repository-code: "https://github.com/nkeikon/inlineviewer"
 url: "https://github.com/nkeikon/inlineviewer"
 license: Apache-2.0
-version: 0.3.2
-date-released: 2026-06-06
+version: 0.5.0
+date-released: 2026-10-21
 # ---------------------------------------------------------------------------
 # The DOI below is the VERSION DOI for v0.3.2 (a specific archived snapshot).
 # To make citations always resolve to your LATEST release, replace it with the
 # Zenodo CONCEPT / "all versions" DOI, shown on the record under "Cite all
 # versions". The version DOI stays useful in `identifiers` for reproducibility.
 # ---------------------------------------------------------------------------
-doi: "10.5281/zenodo.20564266"
+doi: "10.5281/zenodo.19700943"
 identifiers:
   - type: doi
-    value: "10.5281/zenodo.20564266"
-    description: "Zenodo archive of version v0.3.2"
+    value: "10.5281/zenodo.19700943"
+    description: "Zenodo archive"
 keywords:
   - geospatial
   - raster
