@@ -35,7 +35,7 @@ warnings.filterwarnings("ignore", message="invalid scale_factor or add_offset at
 _EXPORT_PATH = None
 _EXPORT_RESULT = None
 
-__version__ = "0.5.0"
+__version__ = "0.5.1"
 
 AVAILABLE_COLORMAPS = [
     "viridis", "inferno", "magma", "plasma",

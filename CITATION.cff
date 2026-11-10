@@ -19,8 +19,8 @@ authors:
 repository-code: "https://github.com/nkeikon/inlineviewer"
 url: "https://github.com/nkeikon/inlineviewer"
 license: Apache-2.0
-version: 0.5.0
-date-released: 2026-10-21
+version: 0.5.1
+date-released: 2026-11-10
 # ---------------------------------------------------------------------------
 # The DOI below is the VERSION DOI for v0.3.2 (a specific archived snapshot).
 # To make citations always resolve to your LATEST release, replace it with the
