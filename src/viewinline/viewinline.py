@@ -1068,6 +1068,11 @@ def render_simple_image(filepath: str, args) -> None:
 
         show_image_auto(img_array, getattr(args, "display", None), is_vector=False)
         
+    except FileNotFoundError:
+        # A missing file is not a damaged-but-readable image: let the
+        # caller report it with a nonzero exit instead of falling back
+        # to the rasterio path.
+        raise
     except Exception as e:
         print(f"[ERROR] Failed to load image: {e}")
 
@@ -2292,6 +2297,9 @@ def main() -> None:
                 try:
                     render_simple_image(paths[0], args)
                     return
+                except FileNotFoundError as e:
+                    print(f"[ERROR] Failed to read file: {e}")
+                    sys.exit(1)
                 except Exception:
                     pass
             render_raster(paths, args)
