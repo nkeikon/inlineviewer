@@ -10,6 +10,15 @@ Quick-look terminal viewer for geospatial and tabular data. Think of it as `ls` 
 
 Renders natively in iTerm2, WezTerm, Konsole, Rio, and Contour. Falls back to `chafa` (ASCII art with 24-bit color) in other terminals like kitty, Ghostty, Terminal.app, VS Code, and Linux terminals. Works over SSH without X11 forwarding or VNC.
 
+## Inside Claude Code
+
+To show the user an image, use `--export`. It saves a PNG and opens it in the user's default image viewer, and you can read the same PNG. Ask before running it, e.g. "Want to see a quick-look of `ndvi.tif`?" If the user asks to see a file, run it directly. If they say to always or never show images, follow that for the rest of the session.
+
+- Use `--info` freely for your own checks. It prints JSON and opens nothing.
+- A plain `viewinline file.tif` run from the shell does not reach the user, because the output is captured as text. Don't claim you showed them an image that way.
+- CSV and Parquet previews with more than 10 rows ask `[first/all]`. Pipe the answer in: `echo first | viewinline data.csv`.
+- Delete exported PNGs once they're no longer needed, unless the user wants to keep them.
+
 ## When to Use
 
 - **File browsing**: `find . -name "*.jpg" | xargs -n1 viewinline` to visually scan results
@@ -59,9 +68,9 @@ Note: `--info` and `--export` report what a file *is* and what it *looks like* �
 
 ## Core Flags
 
-**Inspection (JSON output, no image):**
+**Inspection:**
 - `--info` — print metadata + statistics as JSON, then exit (rasters and vectors; lists variables for NetCDF/HDF with `--subset N`)
-- `--export PATH` — save the rendered image to PATH (`.png`/`.jpg`); prints `{"path": "..."}`
+- `--export PATH` — save the rendered image to PATH (`.png`/`.jpg`), open it in the default image viewer, and print `{"path": "..."}`
 - `--grid [N]` — overlay axis ticks and a light grid (N divisions, default 5). Labels are in the file's CRS units for georeferenced rasters and vectors, pixel positions otherwise. Combine with `--export` to save a quick-look with readable coordinates, e.g. to check a file covers the expected area.
 
 **Raster Display:**
