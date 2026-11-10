@@ -1092,7 +1092,7 @@ def render_netcdf_via_netcdf4(path, args):
         nc = netCDF4.Dataset(path)
     except Exception as e:
         print(f"[ERROR] Could not open NetCDF file: {e}")
-        return
+        sys.exit(1)
 
     # Recursively collect (path, variable) pairs across all groups
     def collect_vars(group, prefix=""):
@@ -1541,6 +1541,7 @@ def render_raster(paths: list[str], args) -> None:
             print("[INFO] viewinline only supports 2D or 3D NetCDF variables")
         else:
             print(f"[ERROR] Inline render failed: {e}")
+        sys.exit(1)
 
 
 def render_gallery(folder: str, grid: str = "4x4", display_scale=None, is_vector=False) -> None:
@@ -1755,7 +1756,7 @@ def render_vector(path, args):
         return
     except Exception as e:
         print(f"[ERROR] Failed to read vector: {e}")
-        return
+        sys.exit(1)
         
     # Detect non-geometry columns
     all_cols = [c for c in gdf.columns if c != gdf.geometry.name]
