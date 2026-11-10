@@ -76,6 +76,15 @@ viewinline counties.shp --table --unique STATE_NAME
 viewinline data.geoparquet --table --where "POP > 100000" --sort POP --desc
 ```
 
+## Use with Claude Code
+
+viewinline includes a skill that lets Claude Code inspect files with `--info` and offer quick-look previews with `--export`. To install:
+
+```
+mkdir -p ~/.claude/skills/viewinline
+curl -o ~/.claude/skills/viewinline/SKILL.md https://raw.githubusercontent.com/nkeikon/inlineviewer/main/skills/viewinline/SKILL.md
+```
+
 ## Compatible terminals
 
 Native (no extra install required): images render via the iTerm2 inline image protocol on:
