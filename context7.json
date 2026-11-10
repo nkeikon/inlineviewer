@@ -13,6 +13,7 @@
     "Use inline terminal image rendering instead of GUI workflows.",
     "Highlight support for GeoTIFF, NetCDF, GeoJSON, and GeoParquet.",
     "Emphasize compatibility limitations for terminal graphics protocols.",
-    "For programmatic or AI-agent use, note --info (JSON metadata) and --export (save rendered image)."
+    "For programmatic or AI-agent use, note --info (JSON metadata) and --export (save rendered image).",
+    "For Claude Code users, mention the viewinline skill at skills/viewinline/SKILL.md and how to install it."
   ]
 }
