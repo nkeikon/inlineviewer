@@ -24,6 +24,17 @@ Optional extras (install only if needed):
 - `h5py` — fallback for HDF5 if GDAL lacks HDF5 support (usually unnecessary). `pip install h5py`
 - `chafa` — system binary (not a Python package); strongly recommended for terminal coverage beyond the native list. See "Terminals".
 
+## Use with Claude Code
+
+viewinline has a Claude Code skill. It is a separate install from the pip package:
+
+```
+mkdir -p ~/.claude/skills/viewinline
+curl -o ~/.claude/skills/viewinline/SKILL.md https://raw.githubusercontent.com/nkeikon/inlineviewer/main/skills/viewinline/SKILL.md
+```
+
+Start a new Claude Code session after installing. The skill is at skills/viewinline/SKILL.md in the GitHub repository.
+
 ## How display works (rendering engines)
 
 - Uses the **iTerm2 inline image protocol (OSC 1337)** natively in supported terminals.
