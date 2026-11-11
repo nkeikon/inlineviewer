@@ -78,7 +78,15 @@ viewinline data.geoparquet --table --where "POP > 100000" --sort POP --desc
 
 ## Use with Claude Code
 
+[![skills.sh](https://skills.sh/b/nkeikon/inlineviewer)](https://skills.sh/nkeikon/inlineviewer)
+
 viewinline includes a skill that lets Claude Code inspect files with `--info` and offer quick-look previews with `--export`. To install:
+
+```
+npx skills add nkeikon/inlineviewer
+```
+
+Or manually:
 
 ```
 mkdir -p ~/.claude/skills/viewinline
